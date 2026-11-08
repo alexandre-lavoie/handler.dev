@@ -315,7 +315,7 @@ export class SandboxService {
       this.firecrackerService.renameVm(id, newName);
     } else if (backend === 'docker') {
       // Docker containers can be renamed
-      const dockerService = await import('../docker.js');
+      const { dockerService } = await import('../docker.js');
       const containerId = id.replace(/^docker-/, '');
       await dockerService.renameContainer(containerId, newName);
     } else {
@@ -344,7 +344,7 @@ export class SandboxService {
       }
       await this.firecrackerService.updateVmResources(id, resources);
     } else if (backend === 'docker') {
-      const dockerService = await import('../docker.js');
+      const { dockerService } = await import('../docker.js');
       const containerId = id.replace(/^docker-/, '');
       await dockerService.updateContainerResources(containerId, resources);
     } else {

@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { mkdir, readFile, rm, access } from 'fs/promises';
 import { join } from 'path';
-import * as dockerService from './docker.js';
+import { dockerService } from './docker.js';
 import { appendBuildLog } from './build-tracker.js';
 import { findAvailableSshPort, resolveAvailablePorts } from '../utils/port.js';
 import type { CreateContainerRequest, ContainerInfo } from '../types/index.js';

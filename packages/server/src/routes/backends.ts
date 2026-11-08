@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
-import { testConnection } from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import { getConfig, setConfig } from '../services/config.js';
 import { getDaytonaService, initializeDaytonaService } from '../services/daytona.js';
 import { reinitializeSandboxService } from './sandboxes.js';
@@ -87,7 +87,7 @@ async function getDockerStatus(): Promise<BackendInfo> {
 
   // Check if Docker daemon is running
   try {
-    const connected = await testConnection();
+    const connected = await dockerService.testConnection();
     info.running = connected;
     info.enabled = connected; // If Docker is running, it's enabled
   } catch (err) {

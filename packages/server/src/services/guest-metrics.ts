@@ -6,7 +6,7 @@
 
 import Docker from 'dockerode';
 import { spawnSync } from 'child_process';
-import { execInContainer } from './docker.js';
+import { dockerService } from './docker.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -178,7 +178,7 @@ export async function getDockerMetrics(containerId: string, sandboxId: string): 
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]),
       Promise.race([
-        execInContainer(containerId, ['df', '-B1', '/']),
+        dockerService.execInContainer(containerId, ['df', '-B1', '/']),
         new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]),
     ]);

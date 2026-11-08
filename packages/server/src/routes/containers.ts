@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import * as dockerService from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import * as containerBuilder from '../services/container-builder.js';
 import * as buildTracker from '../services/build-tracker.js';
 import { CreateContainerSchema, ReconfigureContainerSchema } from '../types/index.js';

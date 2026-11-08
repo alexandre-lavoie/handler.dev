@@ -12,7 +12,7 @@ import type {
   CreateSandboxRequest,
 } from '../../types/sandbox.js';
 import type { ContainerInfo } from '../../types/index.js';
-import * as docker from '../docker.js';
+import { dockerService } from '../docker.js';
 import { listBuilds, getBuild, type BuildStatus } from '../build-tracker.js';
 import { findAvailableSshPort } from '../../utils/port.js';
 
@@ -154,7 +154,7 @@ export class DockerAdapter implements SandboxAdapter {
   async isAvailable(): Promise<boolean> {
     try {
       // Try to list containers to verify Docker is accessible
-      await docker.listContainers();
+      await dockerService.listContainers();
       return true;
     } catch {
       return false;
@@ -162,7 +162,7 @@ export class DockerAdapter implements SandboxAdapter {
   }
 
   async list(): Promise<Sandbox[]> {
-    const containers = await docker.listContainers();
+    const containers = await dockerService.listContainers();
     const sandboxes = containers.map(containerToSandbox);
 
     // Include in-progress builds as pseudo-sandboxes
@@ -193,7 +193,7 @@ export class DockerAdapter implements SandboxAdapter {
     // Strip the 'docker-' prefix to get the container ID
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
 
-    const container = await docker.getContainer(containerId);
+    const container = await dockerService.getContainer(containerId);
     return container ? containerToSandbox(container) : null;
   }
 
@@ -210,15 +210,15 @@ export class DockerAdapter implements SandboxAdapter {
     }
 
     // Auto-pull the image if it doesn't exist locally
-    if (!(await docker.imageExists(request.image))) {
+    if (!(await dockerService.imageExists(request.image))) {
       console.log(`[DockerAdapter] Image '${request.image}' not found locally, pulling...`);
-      await docker.pullImage(request.image);
+      await dockerService.pullImage(request.image);
     }
 
     // Find an available SSH port
     const sshPort = await findAvailableSshPort();
 
-    const container = await docker.createContainer({
+    const container = await dockerService.createContainer({
       name: request.name,
       image: request.image,
       sshPort,
@@ -234,7 +234,7 @@ export class DockerAdapter implements SandboxAdapter {
     await container.start();
 
     // Get the updated container info
-    const info = await docker.getContainer(container.id);
+    const info = await dockerService.getContainer(container.id);
     if (!info) {
       throw new Error('Failed to get container info after creation');
     }
@@ -244,9 +244,9 @@ export class DockerAdapter implements SandboxAdapter {
 
   async start(id: string): Promise<Sandbox> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await docker.startContainer(containerId);
+    await dockerService.startContainer(containerId);
 
-    const container = await docker.getContainer(containerId);
+    const container = await dockerService.getContainer(containerId);
     if (!container) {
       throw new Error(`Container ${containerId} not found after start`);
     }
@@ -256,9 +256,9 @@ export class DockerAdapter implements SandboxAdapter {
 
   async stop(id: string): Promise<Sandbox> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await docker.stopContainer(containerId);
+    await dockerService.stopContainer(containerId);
 
-    const container = await docker.getContainer(containerId);
+    const container = await dockerService.getContainer(containerId);
     if (!container) {
       throw new Error(`Container ${containerId} not found after stop`);
     }
@@ -268,6 +268,6 @@ export class DockerAdapter implements SandboxAdapter {
 
   async delete(id: string): Promise<void> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await docker.removeContainer(containerId);
+    await dockerService.removeContainer(containerId);
   }
 }

@@ -1,14 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import * as dockerService from '../services/docker.js';
-import { isDockerAvailable } from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import { CreateVolumeSchema } from '../types/index.js';
 
 const volumes = new Hono();
 
 // List all volumes
 volumes.get('/', async (c) => {
-  if (!(await isDockerAvailable())) {
+  if (!(await dockerService.isDockerAvailable())) {
     return c.json([]);
   }
   const list = await dockerService.listVolumes();

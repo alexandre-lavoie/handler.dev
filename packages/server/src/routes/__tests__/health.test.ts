@@ -3,12 +3,14 @@ import { Hono } from 'hono';
 
 // Mock Docker service before importing anything that uses it
 vi.mock('../../services/docker.js', () => ({
-  testConnection: vi.fn(),
+  dockerService: {
+    testConnection: vi.fn(),
+  },
 }));
 
-import { testConnection } from '../../services/docker.js';
+import { dockerService } from '../../services/docker.js';
 
-const mockTestConnection = vi.mocked(testConnection);
+const mockTestConnection = vi.mocked(dockerService.testConnection);
 
 // Reproduce the health endpoint from index.ts to test in isolation
 function createHealthApp() {

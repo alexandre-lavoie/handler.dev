@@ -4,7 +4,7 @@
  * Dispatches to Docker exec or SSH based on the sandbox's backend type.
  */
 
-import * as dockerService from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import { getFirecrackerService } from '../services/firecracker.js';
 import { safeExec } from './safe-exec.js';
 

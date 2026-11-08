@@ -8,7 +8,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
-import { testConnection } from './services/docker.js';
+import { dockerService } from './services/docker.js';
 import { getFirecrackerService } from './services/firecracker.js';
 
 const execAsync = promisify(exec);
@@ -232,7 +232,7 @@ app.use('*', cors({
 
 // Health check
 app.get('/api/health', async (c) => {
-  const dockerConnected = await testConnection();
+  const dockerConnected = await dockerService.testConnection();
 
   return c.json({
     status: 'ok',
@@ -630,7 +630,7 @@ async function main() {
   await cleanupBeforeStart(port);
 
   // Test Docker connection
-  const dockerConnected = await testConnection();
+  const dockerConnected = await dockerService.testConnection();
   if (!dockerConnected) {
     console.warn('⚠️  Warning: Could not connect to Docker daemon');
     console.warn('   Make sure Docker is running and accessible');

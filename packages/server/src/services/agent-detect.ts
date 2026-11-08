@@ -4,7 +4,7 @@
  * Results are cached in memory with a 15-second TTL.
  */
 
-import { execInContainer } from './docker.js';
+import { dockerService } from './docker.js';
 import { spawnSync } from 'child_process';
 
 export type AgentId = 'claude' | 'codex' | 'gemini' | 'opencode';
@@ -63,7 +63,7 @@ export async function detectAgentsInDocker(containerId: string, sandboxId: strin
 
   try {
     const output = await Promise.race([
-      execInContainer(containerId, ['sh', '-c', DETECTION_SCRIPT]),
+      dockerService.execInContainer(containerId, ['sh', '-c', DETECTION_SCRIPT]),
       new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
     ]);
     const agents = parseDetectionOutput(output);

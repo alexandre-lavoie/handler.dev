@@ -22,7 +22,7 @@ import type {
   BuildJob,
   TemplateListFilter,
 } from '../../types/template.js';
-import * as docker from '../docker.js';
+import { dockerService } from '../docker.js';
 import * as containerBuilder from '../container-builder.js';
 
 export class TemplateService extends EventEmitter {
@@ -85,7 +85,7 @@ export class TemplateService extends EventEmitter {
    */
   private async syncDockerImages(): Promise<void> {
     try {
-      const images = await docker.listImages();
+      const images = await dockerService.listImages();
 
       for (const image of images) {
         // Skip images without tags

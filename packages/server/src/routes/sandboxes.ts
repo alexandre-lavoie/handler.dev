@@ -18,7 +18,7 @@ import { getAzureService, initializeAzureService } from '../services/azure.js';
 import { getGcpService, initializeGcpService } from '../services/gcp.js';
 import { getDigitalOceanService, initializeDigitalOceanService } from '../services/digitalocean.js';
 import { getLinodeService, initializeLinodeService } from '../services/linode.js';
-import * as dockerService from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import * as containerBuilder from '../services/container-builder.js';
 import { detectAgentsInDocker, detectAgentsViaSsh } from '../services/agent-detect.js';
 import { getDockerMetrics, getVmMetricsViaSsh, getCloudMetricsViaSsh } from '../services/guest-metrics.js';

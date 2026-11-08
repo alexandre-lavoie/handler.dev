@@ -6,7 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getDataPath } from '../services/data-dir.js';
 import { SaveDockerfileSchema, RenameDockerfileSchema } from '../types/index.js';
-import * as dockerService from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import { getPublicKey } from '../services/container-builder.js';
 
 interface DockerfileInfo {

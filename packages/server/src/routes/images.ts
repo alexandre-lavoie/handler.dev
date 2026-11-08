@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import * as dockerService from '../services/docker.js';
-import { isDockerAvailable } from '../services/docker.js';
+import { dockerService } from '../services/docker.js';
 import { PullImageSchema, BuildImageSchema } from '../types/index.js';
 
 const RenameImageSchema = z.object({
@@ -13,7 +12,7 @@ const images = new Hono();
 
 // List all images
 images.get('/', async (c) => {
-  if (!(await isDockerAvailable())) {
+  if (!(await dockerService.isDockerAvailable())) {
     return c.json([]);
   }
   try {
