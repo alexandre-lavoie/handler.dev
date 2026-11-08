@@ -148,35 +148,6 @@ export function CreateSandboxForm({ onClose, initialBackend, initialImage }: Cre
     return usedPorts;
   }, [sandboxes]);
 
-  // Find the next available host port
-  const findNextAvailablePort = (startPort: number, excludePorts: Set<number> = new Set()): number => {
-    const allUsed = new Set([...usedHostPorts, ...excludePorts]);
-    let port = startPort;
-    while (allUsed.has(port) && port > 1024) {
-      port--;
-    }
-    return port;
-  };
-
-  // Set default ports when Docker or VM is selected
-  useEffect(() => {
-    if (backend === 'docker' && ports.length === 0) {
-      // Docker needs host:container mappings
-      const defaultPort1 = findNextAvailablePort(9999);
-      const defaultPort2 = findNextAvailablePort(9998, new Set([defaultPort1]));
-      setPorts([
-        { host: defaultPort1, container: 3000 },
-        { host: defaultPort2, container: 5173 },
-      ]);
-    } else if (backend === 'firecracker' && ports.length === 0) {
-      // VMs just need quick access ports (container port = the port on the VM)
-      setPorts([
-        { host: 3000, container: 3000 },
-        { host: 5173, container: 5173 },
-      ]);
-    }
-  }, [backend]);
-
   // Load Daytona snapshots when Daytona backend is selected
   useEffect(() => {
     if (backend === 'daytona' && daytonaSnapshots.length === 0) {
