@@ -4,7 +4,7 @@
  * Converts Azure VMs to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,6 +19,10 @@ import {
   AZURE_SSH_KEY_PATH,
   type AzureSizeClass,
 } from '../azure.js';
+import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { downloadFileViaScp, listFilesViaSsh } from './files.js';
+import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
+import type { AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps Azure power state to unified SandboxStatus
@@ -167,5 +171,90 @@ export class AzureAdapter implements SandboxAdapter {
   async delete(id: string): Promise<void> {
     const vmName = id.startsWith('azure-') ? id.slice(6) : id;
     await this.azure.terminateInstance(vmName);
+  }
+
+  async rename(_id: string, _name: string): Promise<void> {
+    throw new Error('Renaming is not supported for azure sandboxes');
+  }
+
+  async updateResources(
+    _id: string,
+    _resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    throw new Error('Resource reconfiguration is not supported for azure sandboxes');
+  }
+
+  async getLogs(_id: string, _options?: SandboxLogOptions): Promise<string> {
+    return '[Azure VMs: Use SSH to view logs directly on the VM]';
+  }
+
+  async getSSHKey(_id: string): Promise<string | null> {
+    return this.azure.getSshPrivateKey();
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    return (await this.get(id))?.sshCommand || null;
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadFileViaScp({
+      sourcePath: file.sourcePath,
+      destinationPath: file.destinationPath || '/home/azureuser',
+      filename: file.filename,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'azureuser',
+      keyContent: key,
+    });
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadDirectoryViaScp({
+      archivePath: directory.archivePath,
+      destinationPath: directory.destinationPath || '/home/azureuser',
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'azureuser',
+      keyContent: key,
+    });
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have an IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return listFilesViaSsh({ path, host: sandbox.guestIp, user: sandbox.sshUser || 'azureuser', keyContent: key });
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return downloadFileViaScp({ path, host: sandbox.guestIp, user: sandbox.sshUser || 'azureuser', keyContent: key });
+  }
+
+  async getMetrics(id: string): Promise<GuestMetrics | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) return null;
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) return null;
+
+    return getCloudMetricsViaSsh(sandbox.guestIp, 22, sandbox.sshUser || 'root', key, id);
+  }
+
+  async getAgents(_id: string): Promise<AgentInfo[]> {
+    return [];
   }
 }

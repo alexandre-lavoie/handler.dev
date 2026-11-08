@@ -6,7 +6,7 @@
  * and Daytona cloud workspaces.
  */
 
-export type SandboxBackend = 'docker' | 'firecracker' | 'daytona' | 'aws' | 'azure' | 'gcp' | 'digitalocean' | 'linode';
+export type SandboxBackend = string;
 
 export type SandboxStatus =
   | 'creating'

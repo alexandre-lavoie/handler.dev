@@ -4,7 +4,7 @@
  * Converts Daytona cloud workspaces to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -17,6 +17,10 @@ import {
   type DaytonaSandboxState,
   DAYTONA_SIZE_PRESETS,
 } from '../daytona.js';
+import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { downloadFileViaScp, listFilesViaSsh } from './files.js';
+import type { GuestMetrics } from '../guest-metrics.js';
+import type { AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps Daytona sandbox state to unified SandboxStatus
@@ -195,5 +199,102 @@ export class DaytonaAdapter implements SandboxAdapter {
   async delete(id: string): Promise<void> {
     const workspaceId = id.startsWith('daytona-') ? id.slice(8) : id;
     await this.daytona.deleteWorkspace(workspaceId);
+  }
+
+  async rename(_id: string, _name: string): Promise<void> {
+    throw new Error('Renaming is not supported for daytona sandboxes');
+  }
+
+  async updateResources(
+    _id: string,
+    _resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    throw new Error('Resource reconfiguration is not supported for daytona sandboxes');
+  }
+
+  async getLogs(_id: string, _options?: SandboxLogOptions): Promise<string> {
+    return '[Daytona workspaces: Use SSH to view logs directly on the workspace]';
+  }
+
+  async getSSHKey(id: string): Promise<string | null> {
+    const sandbox = await this.get(id);
+    const meta = sandbox?.backendMeta as DaytonaMeta | undefined;
+    return meta?.sshKey || null;
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    const workspaceId = id.startsWith('daytona-') ? id.slice(8) : id;
+    return this.daytona.getSshCommand(workspaceId);
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return uploadFileViaScp({
+      sourcePath: file.sourcePath,
+      destinationPath: file.destinationPath || '/home/daytona',
+      filename: file.filename,
+      host: sandbox.guestIp,
+      user: 'dev',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+    });
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return uploadDirectoryViaScp({
+      archivePath: directory.archivePath,
+      destinationPath: directory.destinationPath || '/home/daytona',
+      host: sandbox.guestIp,
+      user: 'dev',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+    });
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return listFilesViaSsh({
+      path,
+      host: sandbox.guestIp,
+      user: 'dev',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+    });
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return downloadFileViaScp({
+      path,
+      host: sandbox.guestIp,
+      user: 'dev',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+    });
+  }
+
+  async getMetrics(_id: string): Promise<GuestMetrics | null> {
+    return null;
+  }
+
+  async getAgents(_id: string): Promise<AgentInfo[]> {
+    return [];
   }
 }

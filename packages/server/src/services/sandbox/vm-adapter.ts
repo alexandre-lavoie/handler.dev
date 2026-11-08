@@ -4,7 +4,7 @@
  * Converts Firecracker VMs to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxBackend,
@@ -14,6 +14,9 @@ import type {
 } from '../../types/sandbox.js';
 import type { VmInfo, VmStatus, HypervisorType } from '../../types/vm.js';
 import { FirecrackerService } from '../firecracker.js';
+import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { getVmMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
+import { detectAgentsViaSsh, type AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps VM status to unified SandboxStatus
@@ -187,5 +190,81 @@ export class FirecrackerAdapter implements SandboxAdapter {
   async delete(id: string): Promise<void> {
     // Firecracker IDs already include the 'fc-' prefix internally
     await this.firecracker.deleteVm(id);
+  }
+
+  async rename(id: string, name: string): Promise<void> {
+    this.firecracker.renameVm(id, name);
+  }
+
+  async updateResources(
+    id: string,
+    resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    await this.firecracker.updateVmResources(id, resources);
+  }
+
+  async getLogs(id: string, options: SandboxLogOptions = {}): Promise<string> {
+    return this.firecracker.getVmBootLogs(id, options.tail) || '';
+  }
+
+  async getSSHKey(_id: string): Promise<string | null> {
+    return this.firecracker.getSshPrivateKey();
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    return (await this.get(id))?.sshCommand || null;
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('VM does not have an IP address');
+
+    return uploadFileViaScp({
+      sourcePath: file.sourcePath,
+      destinationPath: file.destinationPath || '/home/agent',
+      filename: file.filename,
+      host: sandbox.guestIp,
+      user: 'agent',
+      keyPath: this.firecracker.getSshKeyPath(),
+    });
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('VM does not have an IP address');
+
+    return uploadDirectoryViaScp({
+      archivePath: directory.archivePath,
+      destinationPath: directory.destinationPath || '/home/agent',
+      host: sandbox.guestIp,
+      user: 'agent',
+      keyPath: this.firecracker.getSshKeyPath(),
+    });
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    return this.firecracker.listVmFiles(id, path);
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    return this.firecracker.downloadFileFromVm(id, path);
+  }
+
+  async getMetrics(id: string): Promise<GuestMetrics | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) return null;
+    const keyPath = this.firecracker.getSshKeyPath();
+    if (!keyPath) return null;
+
+    return getVmMetricsViaSsh(sandbox.guestIp, 22, 'agent', keyPath, id);
+  }
+
+  async getAgents(id: string): Promise<AgentInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) return [];
+    const keyPath = this.firecracker.getSshKeyPath();
+    if (!keyPath) return [];
+
+    return detectAgentsViaSsh(sandbox.guestIp, 22, 'agent', keyPath, id);
   }
 }

@@ -49,6 +49,10 @@ export class FirecrackerService extends EventEmitter {
     this.networkPool = new NetworkPool(dataDir);
   }
 
+  isAvailable(): boolean {
+    return true;
+  }
+
   /**
    * Get the data directory path
    */

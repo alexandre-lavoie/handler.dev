@@ -4,7 +4,7 @@
  * Converts Linode instances to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,6 +19,10 @@ import {
   LINODE_SSH_KEY_PATH,
   type LinodeSizeClass,
 } from '../linode.js';
+import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { downloadFileViaScp, listFilesViaSsh } from './files.js';
+import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
+import type { AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps Linode instance status to unified SandboxStatus
@@ -181,5 +185,90 @@ export class LinodeAdapter implements SandboxAdapter {
     const linodeIdStr = id.startsWith('linode-') ? id.slice(7) : id;
     const linodeId = parseInt(linodeIdStr, 10);
     await this.linode.deleteInstance(linodeId);
+  }
+
+  async rename(_id: string, _name: string): Promise<void> {
+    throw new Error('Renaming is not supported for linode sandboxes');
+  }
+
+  async updateResources(
+    _id: string,
+    _resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    throw new Error('Resource reconfiguration is not supported for linode sandboxes');
+  }
+
+  async getLogs(_id: string, _options?: SandboxLogOptions): Promise<string> {
+    return '[Linode instances: Use SSH to view logs directly on the instance]';
+  }
+
+  async getSSHKey(_id: string): Promise<string | null> {
+    return this.linode.getSshPrivateKey();
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    return (await this.get(id))?.sshCommand || null;
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadFileViaScp({
+      sourcePath: file.sourcePath,
+      destinationPath: file.destinationPath || '/root',
+      filename: file.filename,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'root',
+      keyContent: key,
+    });
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadDirectoryViaScp({
+      archivePath: directory.archivePath,
+      destinationPath: directory.destinationPath || '/root',
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'root',
+      keyContent: key,
+    });
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have an IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return listFilesViaSsh({ path, host: sandbox.guestIp, user: sandbox.sshUser || 'root', keyContent: key });
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return downloadFileViaScp({ path, host: sandbox.guestIp, user: sandbox.sshUser || 'root', keyContent: key });
+  }
+
+  async getMetrics(id: string): Promise<GuestMetrics | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) return null;
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) return null;
+
+    return getCloudMetricsViaSsh(sandbox.guestIp, 22, sandbox.sshUser || 'root', key, id);
+  }
+
+  async getAgents(_id: string): Promise<AgentInfo[]> {
+    return [];
   }
 }

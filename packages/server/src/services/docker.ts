@@ -13,6 +13,10 @@ export class DockerService {
 
   constructor(private readonly docker: Docker = new Docker()) {}
 
+  isAvailable(): boolean {
+    return true;
+  }
+
   async listContainers(): Promise<ContainerInfo[]> {
     const containers = await this.docker.listContainers({
       all: true,
@@ -807,4 +811,17 @@ export class DockerService {
   }
 }
 
-export const dockerService = new DockerService();
+// Singleton instance
+export let dockerService = new DockerService();
+
+export function getDockerService(): DockerService {
+  if (!dockerService) {
+    dockerService = new DockerService();
+  }
+  return dockerService;
+}
+
+export async function initializeDockerService(): Promise<DockerService> {
+  const service = getDockerService();
+  return service;
+}

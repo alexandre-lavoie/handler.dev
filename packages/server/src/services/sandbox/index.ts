@@ -5,7 +5,7 @@
  * through a single API. Routes requests to the appropriate backend adapter.
  */
 
-import type { SandboxAdapter, AdapterResult } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxGitLog, SandboxLogOptions, TmuxSessionInfo } from './types.js';
 import type {
   Sandbox,
   SandboxBackend,
@@ -21,6 +21,7 @@ import { AzureAdapter } from './azure-adapter.js';
 import { GcpAdapter } from './gcp-adapter.js';
 import { DigitalOceanAdapter } from './digitalocean-adapter.js';
 import { LinodeAdapter } from './linode-adapter.js';
+import { DockerService, dockerService } from '../docker.js';
 import { FirecrackerService } from '../firecracker.js';
 import { DaytonaService } from '../daytona.js';
 import { AwsService } from '../aws.js';
@@ -28,12 +29,17 @@ import { AzureService } from '../azure.js';
 import { GcpService } from '../gcp.js';
 import { DigitalOceanService } from '../digitalocean.js';
 import { LinodeService } from '../linode.js';
+import type { GuestMetrics } from '../guest-metrics.js';
+import type { AgentInfo } from '../agent-detect.js';
+import { execInSandbox } from '../../lib/exec-in-sandbox.js';
+import { getTerminalSummary as generateTerminalSummary, type CachedSummary } from '../terminal-summary.js';
 
 export class SandboxService {
   private adapters: Map<SandboxBackend, SandboxAdapter> = new Map();
   private initialized = false;
 
   // Service instances (lazily initialized)
+  private dockerService: DockerService | null = null;
   private firecrackerService: FirecrackerService | null = null;
   private daytonaService: DaytonaService | null = null;
   private awsService: AwsService | null = null;
@@ -46,6 +52,7 @@ export class SandboxService {
    * Initialize the sandbox service with all available adapters
    */
   async initialize(options?: {
+    docker?: DockerService;
     firecracker?: FirecrackerService;
     daytona?: DaytonaService;
     aws?: AwsService;
@@ -59,7 +66,8 @@ export class SandboxService {
     console.log('[SandboxService] Initializing...');
 
     // Register Docker adapter (always available)
-    const dockerAdapter = new DockerAdapter();
+    this.dockerService = options?.docker ?? dockerService;
+    const dockerAdapter = new DockerAdapter(this.dockerService);
     if (await dockerAdapter.isAvailable()) {
       this.adapters.set('docker', dockerAdapter);
       console.log('[SandboxService] Docker adapter registered');
@@ -144,13 +152,13 @@ export class SandboxService {
    */
   async getBackendStatus(): Promise<Record<SandboxBackend, boolean>> {
     const results: Record<SandboxBackend, boolean> = {
-      docker: false,
-      firecracker: false,
-      daytona: false,
       aws: false,
       azure: false,
-      gcp: false,
+      daytona: false,
       digitalocean: false,
+      docker: false,
+      gcp: false,
+      firecracker: false,
       linode: false,
     };
 
@@ -175,7 +183,7 @@ export class SandboxService {
 
     // Fetch from all requested backends in parallel
     const promises = backends.map(async (backend) => {
-      const adapter = this.adapters.get(backend);
+      const adapter = this.getAdapter(backend);
       if (!adapter) {
         return { backend, sandboxes: [] };
       }
@@ -236,12 +244,8 @@ export class SandboxService {
    * Get a specific sandbox by ID
    */
   async get(id: string): Promise<Sandbox | null> {
-    const backend = this.getBackendFromId(id);
-    const adapter = this.adapters.get(backend);
-
-    if (!adapter) {
-      return null;
-    }
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter) return null;
 
     return adapter.get(id);
   }
@@ -250,83 +254,42 @@ export class SandboxService {
    * Create a new sandbox
    */
   async create(request: CreateSandboxRequest): Promise<Sandbox> {
-    const adapter = this.adapters.get(request.backend);
-
-    if (!adapter) {
-      throw new Error(`Backend '${request.backend}' is not available`);
-    }
-
-    return adapter.create(request);
+    return this.getAdapterThrow(this.getBackendFromId(request.backend)).create(request);
   }
 
   /**
    * Start a sandbox
    */
   async start(id: string): Promise<Sandbox> {
-    const backend = this.getBackendFromId(id);
-    const adapter = this.adapters.get(backend);
-
-    if (!adapter) {
-      throw new Error(`Backend '${backend}' is not available`);
-    }
-
-    return adapter.start(id);
+    return this.getAdapterThrow(this.getBackendFromId(id)).start(id);
   }
 
   /**
    * Stop a sandbox
    */
   async stop(id: string): Promise<Sandbox> {
-    const backend = this.getBackendFromId(id);
-    const adapter = this.adapters.get(backend);
-
-    if (!adapter) {
-      throw new Error(`Backend '${backend}' is not available`);
-    }
-
-    return adapter.stop(id);
+    return this.getAdapterThrow(this.getBackendFromId(id)).stop(id);
   }
 
   /**
    * Delete a sandbox
    */
   async delete(id: string): Promise<void> {
-    const backend = this.getBackendFromId(id);
-    const adapter = this.adapters.get(backend);
-
-    if (!adapter) {
-      throw new Error(`Backend '${backend}' is not available`);
-    }
-
-    return adapter.delete(id);
+    return this.getAdapterThrow(this.getBackendFromId(id)).delete(id);
   }
 
   /**
-   * Rename a sandbox (supported for Docker and Firecracker)
+   * Rename a sandbox
    */
   async rename(id: string, newName: string): Promise<Sandbox> {
-    const backend = this.getBackendFromId(id);
-
-    if (backend === 'firecracker') {
-      if (!this.firecrackerService) {
-        throw new Error('Firecracker service is not available');
-      }
-      // Firecracker VMs are stored with the full ID including 'fc-' prefix
-      this.firecrackerService.renameVm(id, newName);
-    } else if (backend === 'docker') {
-      // Docker containers can be renamed
-      const { dockerService } = await import('../docker.js');
-      const containerId = id.replace(/^docker-/, '');
-      await dockerService.renameContainer(containerId, newName);
-    } else {
-      throw new Error(`Renaming is not supported for ${backend} sandboxes`);
-    }
+    await this.getAdapterThrow(this.getBackendFromId(id)).rename(id, newName);
 
     // Return updated sandbox
     const result = await this.get(id);
     if (!result) {
       throw new Error(`Sandbox ${id} not found after rename`);
     }
+
     return result;
   }
 
@@ -336,58 +299,233 @@ export class SandboxService {
    * For Docker: uses docker update for CPU/memory on running containers.
    */
   async updateResources(id: string, resources: { vcpus?: number; memoryMb?: number; diskGb?: number }): Promise<Sandbox> {
-    const backend = this.getBackendFromId(id);
-
-    if (backend === 'firecracker') {
-      if (!this.firecrackerService) {
-        throw new Error('Firecracker service is not available');
-      }
-      await this.firecrackerService.updateVmResources(id, resources);
-    } else if (backend === 'docker') {
-      const { dockerService } = await import('../docker.js');
-      const containerId = id.replace(/^docker-/, '');
-      await dockerService.updateContainerResources(containerId, resources);
-    } else {
-      throw new Error(`Resource reconfiguration is not supported for ${backend} sandboxes`);
-    }
+    await this.getAdapterThrow(this.getBackendFromId(id)).updateResources(id, resources);
 
     const result = await this.get(id);
     if (!result) {
       throw new Error(`Sandbox ${id} not found after resource update`);
     }
+
     return result;
+  }
+
+  /**
+   * Get logs for a sandbox. Returns null when the sandbox does not exist.
+   */
+  async getLogs(id: string, options?: SandboxLogOptions): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.getLogs(id, options);
+  }
+
+  /**
+   * Get the SSH private key for a sandbox. Returns null when the sandbox or key does not exist.
+   */
+  async getSSHKey(id: string): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.getSSHKey(id);
+  }
+
+  /**
+   * Get the SSH command for a sandbox. Returns null when the sandbox or command does not exist.
+   */
+  async getSSHCommand(id: string): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.getSSHCommand(id);
+  }
+
+  /**
+   * Upload a local file to a sandbox. Returns null when the sandbox does not exist.
+   */
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.uploadFile(id, file);
+  }
+
+  /**
+   * Upload a local directory archive to a sandbox. Returns null when the sandbox does not exist.
+   */
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.uploadDirectory(id, directory);
+  }
+
+  /**
+   * List files in a sandbox directory. Returns null when the sandbox does not exist.
+   */
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[] | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.listFiles(id, path);
+  }
+
+  /**
+   * Download a file from a sandbox. Returns null when the sandbox does not exist.
+   */
+  async downloadFile(id: string, path: string): Promise<Buffer | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.downloadFile(id, path);
+  }
+
+  /**
+   * Get runtime metrics for a sandbox. Returns null when unavailable.
+   */
+  async getMetrics(id: string): Promise<GuestMetrics | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return null;
+
+    return adapter.getMetrics(id);
+  }
+
+  /**
+   * Get detected coding agents for a sandbox. Returns an empty array when unavailable.
+   */
+  async getAgents(id: string): Promise<AgentInfo[]> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter || !(await adapter.get(id))) return [];
+
+    return adapter.getAgents(id);
+  }
+
+  /**
+   * Get tmux sessions running in a sandbox.
+   */
+  async getTmuxSessions(id: string): Promise<TmuxSessionInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox || sandbox.status !== 'running') return [];
+
+    try {
+      const output = await execInSandbox(
+        sandbox,
+        `tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_created}' 2>/dev/null || true`,
+        { timeout: 5000 },
+      );
+
+      return output
+        .trim()
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => {
+          const [name, windows, created] = line.split('\t');
+          return {
+            name: name || '',
+            windows: parseInt(windows || '0', 10),
+            created: parseInt(created || '0', 10),
+          };
+        })
+        .filter((session) => session.name.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get an AI-generated summary of a sandbox terminal session.
+   */
+  async getTerminalSummary(id: string, session?: string): Promise<CachedSummary | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox || sandbox.status !== 'running') return null;
+
+    const tmuxSession = session && /^[a-zA-Z0-9_.-]+$/.test(session)
+      ? session
+      : undefined;
+
+    return generateTerminalSummary(sandbox, tmuxSession);
+  }
+
+  /**
+   * Capture the current terminal pane with ANSI escape codes.
+   */
+  async captureTerminal(id: string): Promise<string | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox || sandbox.status !== 'running') return null;
+
+    try {
+      const content = await execInSandbox(
+        sandbox,
+        `tmux capture-pane -e -p -S -50 2>/dev/null || true`,
+        { timeout: 5000 },
+      );
+      return content || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get commit history and the current branch from a sandbox repository.
+   */
+  async getGitLog(id: string, limit = 50, workdir = '/home/agent'): Promise<SandboxGitLog> {
+    const sandbox = await this.get(id);
+    if (!sandbox || sandbox.status !== 'running') return { commits: [], branch: '' };
+
+    const repoRoot = (await execInSandbox(
+      sandbox,
+      `cd ${JSON.stringify(workdir)} && git rev-parse --show-toplevel 2>/dev/null || echo ""`,
+    )).trim();
+    const gitDir = repoRoot || workdir;
+
+    const [logOutput, branch] = await Promise.all([
+      execInSandbox(sandbox, `cd ${JSON.stringify(gitDir)} && git log --pretty=format:'%H|%h|%s|%an|%ae|%aI' -n ${limit} 2>/dev/null || echo ""`),
+      execInSandbox(sandbox, `cd ${JSON.stringify(gitDir)} && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""`),
+    ]);
+
+    const commits = logOutput
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, shortHash, subject, author, email, date] = line.split('|');
+        return { hash, shortHash, subject, author, email, date };
+      });
+
+    return { commits, branch: branch.trim() || '' };
+  }
+
+  /**
+   * Get the formatted details of a commit from a sandbox repository.
+   */
+  async getGitCommit(id: string, hash: string, workdir = '/home/agent'): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox || sandbox.status !== 'running') return '';
+
+    const repoRoot = (await execInSandbox(
+      sandbox,
+      `cd ${JSON.stringify(workdir)} && git rev-parse --show-toplevel 2>/dev/null || echo ""`,
+    )).trim();
+    const gitDir = repoRoot || workdir;
+
+    return execInSandbox(
+      sandbox,
+      `cd ${JSON.stringify(gitDir)} && git show ${hash} --stat 2>/dev/null || echo ""`,
+    );
   }
 
   /**
    * Determine the backend type from a sandbox ID
    */
   private getBackendFromId(id: string): SandboxBackend {
-    if (id.startsWith('docker-')) {
-      return 'docker';
+    const prefix = id.split("-")[0];
+
+    switch (prefix) {
+      case 'do': return 'digitalocean';
+
+      case 'fc':
+      case 'vm': return 'firecracker';
+
+      default: return prefix;
     }
-    if (id.startsWith('fc-')) {
-      return 'firecracker';
-    }
-    if (id.startsWith('daytona-')) {
-      return 'daytona';
-    }
-    if (id.startsWith('aws-')) {
-      return 'aws';
-    }
-    if (id.startsWith('azure-')) {
-      return 'azure';
-    }
-    if (id.startsWith('gcp-')) {
-      return 'gcp';
-    }
-    if (id.startsWith('do-')) {
-      return 'digitalocean';
-    }
-    if (id.startsWith('linode-')) {
-      return 'linode';
-    }
-    // Legacy 'vm-' prefix mapped to firecracker as migration path
-    return 'firecracker';
   }
 
   /**
@@ -395,6 +533,15 @@ export class SandboxService {
    */
   getAdapter(backend: SandboxBackend): SandboxAdapter | undefined {
     return this.adapters.get(backend);
+  }
+
+  getAdapterThrow(backend: SandboxBackend): SandboxAdapter {
+    const adapter = this.getAdapter(backend);
+    if (!adapter) {
+      throw new Error(`Backend '${backend}' is not available`);
+    }
+
+    return adapter;
   }
 
   /**
@@ -475,6 +622,7 @@ export function getSandboxService(): SandboxService {
  * Initialize the sandbox service with dependencies
  */
 export async function initializeSandboxService(options?: {
+  docker?: DockerService;
   firecracker?: FirecrackerService;
   daytona?: DaytonaService;
   aws?: AwsService;

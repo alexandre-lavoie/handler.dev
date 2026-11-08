@@ -4,7 +4,11 @@
  * Converts Docker containers to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import { execFileSync } from 'child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { join, posix } from 'path';
+import { tmpdir } from 'os';
 import type {
   Sandbox,
   SandboxStatus,
@@ -12,9 +16,13 @@ import type {
   CreateSandboxRequest,
 } from '../../types/sandbox.js';
 import type { ContainerInfo } from '../../types/index.js';
-import { dockerService } from '../docker.js';
+import { DockerService, dockerService } from '../docker.js';
 import { listBuilds, getBuild, type BuildStatus } from '../build-tracker.js';
+import { getPrivateKey } from '../container-builder.js';
 import { findAvailableSshPort } from '../../utils/port.js';
+import { parseLsOutput } from './files.js';
+import { getDockerMetrics, type GuestMetrics } from '../guest-metrics.js';
+import { detectAgentsInDocker, type AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps Docker container state to unified SandboxStatus
@@ -151,10 +159,12 @@ function buildStatusToSandbox(buildId: string, status: BuildStatus): Sandbox {
 export class DockerAdapter implements SandboxAdapter {
   readonly backend = 'docker' as const;
 
+  constructor(public service: DockerService = dockerService) {}
+
   async isAvailable(): Promise<boolean> {
     try {
       // Try to list containers to verify Docker is accessible
-      await dockerService.listContainers();
+      await this.service.listContainers();
       return true;
     } catch {
       return false;
@@ -162,7 +172,7 @@ export class DockerAdapter implements SandboxAdapter {
   }
 
   async list(): Promise<Sandbox[]> {
-    const containers = await dockerService.listContainers();
+    const containers = await this.service.listContainers();
     const sandboxes = containers.map(containerToSandbox);
 
     // Include in-progress builds as pseudo-sandboxes
@@ -193,7 +203,7 @@ export class DockerAdapter implements SandboxAdapter {
     // Strip the 'docker-' prefix to get the container ID
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
 
-    const container = await dockerService.getContainer(containerId);
+    const container = await this.service.getContainer(containerId);
     return container ? containerToSandbox(container) : null;
   }
 
@@ -210,15 +220,15 @@ export class DockerAdapter implements SandboxAdapter {
     }
 
     // Auto-pull the image if it doesn't exist locally
-    if (!(await dockerService.imageExists(request.image))) {
+    if (!(await this.service.imageExists(request.image))) {
       console.log(`[DockerAdapter] Image '${request.image}' not found locally, pulling...`);
-      await dockerService.pullImage(request.image);
+      await this.service.pullImage(request.image);
     }
 
     // Find an available SSH port
     const sshPort = await findAvailableSshPort();
 
-    const container = await dockerService.createContainer({
+    const container = await this.service.createContainer({
       name: request.name,
       image: request.image,
       sshPort,
@@ -234,7 +244,7 @@ export class DockerAdapter implements SandboxAdapter {
     await container.start();
 
     // Get the updated container info
-    const info = await dockerService.getContainer(container.id);
+    const info = await this.service.getContainer(container.id);
     if (!info) {
       throw new Error('Failed to get container info after creation');
     }
@@ -244,9 +254,9 @@ export class DockerAdapter implements SandboxAdapter {
 
   async start(id: string): Promise<Sandbox> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await dockerService.startContainer(containerId);
+    await this.service.startContainer(containerId);
 
-    const container = await dockerService.getContainer(containerId);
+    const container = await this.service.getContainer(containerId);
     if (!container) {
       throw new Error(`Container ${containerId} not found after start`);
     }
@@ -256,9 +266,9 @@ export class DockerAdapter implements SandboxAdapter {
 
   async stop(id: string): Promise<Sandbox> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await dockerService.stopContainer(containerId);
+    await this.service.stopContainer(containerId);
 
-    const container = await dockerService.getContainer(containerId);
+    const container = await this.service.getContainer(containerId);
     if (!container) {
       throw new Error(`Container ${containerId} not found after stop`);
     }
@@ -268,6 +278,126 @@ export class DockerAdapter implements SandboxAdapter {
 
   async delete(id: string): Promise<void> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    await dockerService.removeContainer(containerId);
+    await this.service.removeContainer(containerId);
+  }
+
+  async rename(id: string, name: string): Promise<void> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    await this.service.renameContainer(containerId, name);
+  }
+
+  async updateResources(
+    id: string,
+    resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    await this.service.updateContainerResources(containerId, resources);
+  }
+
+  async getLogs(id: string, options: SandboxLogOptions = {}): Promise<string> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    return this.service.getContainerLogs(containerId, {
+      tail: options.tail,
+      timestamps: options.timestamps ?? true,
+    });
+  }
+
+  async getSSHKey(_id: string): Promise<string | null> {
+    return getPrivateKey();
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    return (await this.get(id))?.sshCommand || null;
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    const destinationPath = file.destinationPath || '/home/dev/workspace';
+    const remotePath = `${destinationPath}/${file.filename}`;
+
+    try {
+      execFileSync('docker', ['exec', containerId, 'mkdir', '-p', posix.dirname(remotePath)], { stdio: 'pipe' });
+    } catch {
+      // docker cp reports a useful error if the destination is unavailable.
+    }
+    execFileSync('docker', ['cp', file.sourcePath, `${containerId}:${remotePath}`], { stdio: 'pipe' });
+    try {
+      execFileSync('docker', ['exec', containerId, 'chown', '-R', 'dev:dev', remotePath], { stdio: 'pipe' });
+    } catch {
+      // Ownership changes are best-effort.
+    }
+
+    return remotePath;
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    const destinationPath = directory.destinationPath || '/home/dev/workspace';
+    const remoteArchive = `/tmp/handler-upload-${process.pid}-${Date.now()}.tar.gz`;
+
+    try {
+      execFileSync('docker', ['exec', containerId, 'mkdir', '-p', destinationPath], { stdio: 'pipe' });
+    } catch {
+      // Extraction reports a useful error if the destination is unavailable.
+    }
+    execFileSync('docker', ['cp', directory.archivePath, `${containerId}:${remoteArchive}`], { stdio: 'pipe' });
+    try {
+      execFileSync('docker', ['exec', containerId, 'tar', '-xzf', remoteArchive, '-C', destinationPath], { stdio: 'pipe' });
+    } finally {
+      try {
+        execFileSync('docker', ['exec', containerId, 'rm', remoteArchive], { stdio: 'pipe' });
+      } catch {
+        // Remote cleanup is best-effort.
+      }
+    }
+    try {
+      execFileSync('docker', ['exec', containerId, 'chown', '-R', 'dev:dev', destinationPath], { stdio: 'pipe' });
+    } catch {
+      // Ownership changes are best-effort.
+    }
+
+    return destinationPath;
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    let output: string;
+    try {
+      output = execFileSync('docker', ['exec', containerId, 'ls', '-la', '--time-style=long-iso', path], {
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+    } catch {
+      output = execFileSync('docker', ['exec', containerId, 'ls', '-la', path], {
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+    }
+    return parseLsOutput(output);
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-download-'));
+    const destination = join(tempDir, 'downloaded-file');
+    try {
+      execFileSync('docker', ['cp', `${containerId}:${path}`, destination], {
+        stdio: 'pipe',
+        timeout: 60_000,
+      });
+      return readFileSync(destination);
+    } finally {
+      rmSync(tempDir, { recursive: true });
+    }
+  }
+
+  async getMetrics(id: string): Promise<GuestMetrics> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    return getDockerMetrics(containerId, id);
+  }
+
+  async getAgents(id: string): Promise<AgentInfo[]> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    return detectAgentsInDocker(containerId, id);
   }
 }

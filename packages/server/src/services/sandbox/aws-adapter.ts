@@ -4,7 +4,7 @@
  * Converts AWS EC2 instances to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,6 +19,10 @@ import {
   AWS_SSH_KEY_PATH,
   type AwsSizeClass,
 } from '../aws.js';
+import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { downloadFileViaScp, listFilesViaSsh } from './files.js';
+import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
+import type { AgentInfo } from '../agent-detect.js';
 
 /**
  * Maps EC2 instance state to unified SandboxStatus
@@ -182,5 +186,91 @@ export class AwsAdapter implements SandboxAdapter {
   async delete(id: string): Promise<void> {
     const instanceId = id.startsWith('aws-') ? id.slice(4) : id;
     await this.aws.terminateInstance(instanceId);
+  }
+
+  async rename(_id: string, _name: string): Promise<void> {
+    throw new Error('Renaming is not supported for aws sandboxes');
+  }
+
+  async updateResources(
+    _id: string,
+    _resources: { vcpus?: number; memoryMb?: number; diskGb?: number },
+  ): Promise<void> {
+    throw new Error('Resource reconfiguration is not supported for aws sandboxes');
+  }
+
+  async getLogs(_id: string, _options?: SandboxLogOptions): Promise<string> {
+    return '[AWS instances: Use SSH to view logs directly on the instance]';
+  }
+
+  async getSSHKey(_id: string): Promise<string | null> {
+    return this.aws.getSshPrivateKey();
+  }
+
+  async getSSHCommand(id: string): Promise<string | null> {
+    const instanceId = id.startsWith('aws-') ? id.slice(4) : id;
+    return this.aws.getSshCommand(instanceId);
+  }
+
+  async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return uploadFileViaScp({
+      sourcePath: file.sourcePath,
+      destinationPath: file.destinationPath || '/home/ubuntu',
+      filename: file.filename,
+      host: sandbox.guestIp,
+      user: 'ubuntu',
+      keyContent: key,
+    });
+  }
+
+  async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return uploadDirectoryViaScp({
+      archivePath: directory.archivePath,
+      destinationPath: directory.destinationPath || '/home/ubuntu',
+      host: sandbox.guestIp,
+      user: 'ubuntu',
+      keyContent: key,
+    });
+  }
+
+  async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return listFilesViaSsh({ path, host: sandbox.guestIp, user: 'ubuntu', keyContent: key });
+  }
+
+  async downloadFile(id: string, path: string): Promise<Buffer> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return downloadFileViaScp({ path, host: sandbox.guestIp, user: 'ubuntu', keyContent: key });
+  }
+
+  async getMetrics(id: string): Promise<GuestMetrics | null> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) return null;
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) return null;
+
+    return getCloudMetricsViaSsh(sandbox.guestIp, 22, sandbox.sshUser || 'root', key, id);
+  }
+
+  async getAgents(_id: string): Promise<AgentInfo[]> {
+    return [];
   }
 }
