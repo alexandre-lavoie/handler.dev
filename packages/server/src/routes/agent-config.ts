@@ -7,7 +7,7 @@ import { getDataPath } from '../services/data-dir.js';
 import * as agentConfigService from '../services/agent-config.js';
 import { injectFilesIntoSandbox } from '../services/sandbox-inject.js';
 import type { FileToInject } from '../services/sandbox-inject.js';
-import type { SkillFrontmatter, SubagentConfig, PluginRef, PluginMarketplace } from '../types/agent-config.js';
+import type { AgentConfigPreset, MCPServerConfig, SkillFrontmatter, SubagentConfig, PluginRef, PluginMarketplace } from '../types/agent-config.js';
 
 const agentConfig = new Hono();
 
@@ -157,6 +157,131 @@ function serializeFrontmatter(fm: Record<string, unknown>): string {
     }
   }
   return lines.join('\n');
+}
+
+const OPENCODE_CONFIG_DIR = '~/.config/opencode';
+
+function toOpenCodeMcpServer(server: MCPServerConfig): Record<string, unknown> {
+  if ('command' in server) {
+    return {
+      type: 'local',
+      command: [server.command, ...server.args],
+      ...(server.env && Object.keys(server.env).length > 0
+        ? { environment: server.env }
+        : {}),
+    };
+  }
+
+  return {
+    type: 'remote',
+    url: server.url,
+    ...(server.headers && Object.keys(server.headers).length > 0
+      ? { headers: server.headers }
+      : {}),
+  };
+}
+
+const CLAUDE_TOOL_TO_OPENCODE_ACTION: Record<string, string> = {
+  Bash: 'shell',
+  Edit: 'edit',
+  Glob: 'glob',
+  Grep: 'grep',
+  Question: 'question',
+  Read: 'read',
+  Skill: 'skill',
+  Task: 'subagent',
+  WebFetch: 'webfetch',
+  WebSearch: 'websearch',
+  Write: 'edit',
+};
+
+interface OpenCodePermissionRule {
+  action: string;
+  resource: string;
+  effect: 'allow' | 'deny';
+}
+
+function toOpenCodePermissionRule(rule: string, effect: 'allow' | 'deny'): OpenCodePermissionRule | null {
+  const match = rule.match(/^([^()]+)(?:\((.*)\))?$/);
+  if (!match) return null;
+
+  const action = CLAUDE_TOOL_TO_OPENCODE_ACTION[match[1].trim()];
+  if (!action) return null;
+
+  // Claude uses `command:*` for command prefixes; OpenCode uses `command *`.
+  const resource = match[2]
+    ? match[2].replace(/:\*$/, ' *')
+    : '*';
+  return { action, resource, effect };
+}
+
+function toOpenCodeModel(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  if (model.includes('/')) return model;
+  if (model.startsWith('claude-')) return `anthropic/${model}`;
+  return undefined;
+}
+
+function buildOpenCodeConfig(config: AgentConfigPreset): Record<string, unknown> {
+  const openCodeConfig: Record<string, unknown> = {
+    $schema: 'https://opencode.ai/config.json',
+  };
+
+  if (Object.keys(config.mcpServers).length > 0) {
+    openCodeConfig.mcp = {
+      servers: Object.fromEntries(
+        Object.entries(config.mcpServers).map(([name, server]) => [name, toOpenCodeMcpServer(server)]),
+      ),
+    };
+  }
+
+  const model = toOpenCodeModel(config.model);
+  if (model) openCodeConfig.model = model;
+
+  const permissions = [
+    ...(config.permissions.allow || []).map(rule => toOpenCodePermissionRule(rule, 'allow')),
+    ...(config.permissions.deny || []).map(rule => toOpenCodePermissionRule(rule, 'deny')),
+  ].filter((rule): rule is OpenCodePermissionRule => rule !== null);
+  if (permissions.length > 0) openCodeConfig.permissions = permissions;
+
+  if (config.rules.length > 0) {
+    openCodeConfig.instructions = [`${OPENCODE_CONFIG_DIR}/rules/*.md`];
+  }
+
+  if (config.subagents.length > 0) {
+    openCodeConfig.agents = Object.fromEntries(config.subagents.map(agent => {
+      const agentConfig: Record<string, unknown> = {
+        description: agent.description,
+        mode: 'subagent',
+        system: agent.systemPrompt,
+      };
+      const agentModel = toOpenCodeModel(agent.model);
+      if (agentModel) agentConfig.model = agentModel;
+
+      const agentPermissions: OpenCodePermissionRule[] = [];
+      if (agent.tools?.length) {
+        agentPermissions.push({ action: '*', resource: '*', effect: 'deny' });
+        for (const tool of agent.tools) {
+          const action = CLAUDE_TOOL_TO_OPENCODE_ACTION[tool];
+          if (action) agentPermissions.push({ action, resource: '*', effect: 'allow' });
+        }
+      }
+      for (const tool of agent.disallowedTools || []) {
+        const action = CLAUDE_TOOL_TO_OPENCODE_ACTION[tool];
+        if (action) agentPermissions.push({ action, resource: '*', effect: 'deny' });
+      }
+      if (agent.permissionMode === 'acceptEdits') {
+        agentPermissions.push({ action: 'edit', resource: '*', effect: 'allow' });
+      } else if (agent.permissionMode === 'plan') {
+        agentPermissions.push({ action: 'edit', resource: '*', effect: 'deny' });
+      }
+      if (agentPermissions.length > 0) agentConfig.permissions = agentPermissions;
+
+      return [agent.name, agentConfig];
+    }));
+  }
+
+  return openCodeConfig;
 }
 
 // ============ Plugin Marketplace Proxy ============
@@ -422,12 +547,21 @@ agentConfig.post('/:id/inject/:sandboxId', async (c) => {
   // Build the files to inject
   const filesToInject: FileToInject[] = [];
 
-  // 1. ~/.claude.json (MCP servers config)
+  // 1. Agent settings (MCP servers, permissions, model, rules, and subagents)
   if (Object.keys(config.mcpServers).length > 0) {
     filesToInject.push({
       content: JSON.stringify({ mcpServers: config.mcpServers }, null, 2),
       destPath: '/home/dev',
       filename: '.claude.json',
+    });
+  }
+
+  const openCodeConfig = buildOpenCodeConfig(config);
+  if (Object.keys(openCodeConfig).length > 1) {
+    filesToInject.push({
+      content: JSON.stringify(openCodeConfig, null, 2),
+      destPath: OPENCODE_CONFIG_DIR,
+      filename: 'opencode.json',
     });
   }
 
@@ -437,6 +571,12 @@ agentConfig.post('/:id/inject/:sandboxId', async (c) => {
       content: config.claudeMd,
       destPath: '/home/dev/.claude',
       filename: 'CLAUDE.md',
+    });
+
+    filesToInject.push({
+      content: config.claudeMd,
+      destPath: OPENCODE_CONFIG_DIR,
+      filename: 'AGENTS.md',
     });
   }
 
@@ -490,6 +630,11 @@ agentConfig.post('/:id/inject/:sandboxId', async (c) => {
         destPath: `/home/dev/.claude/skills/${skill.name}`,
         filename: 'SKILL.md',
       });
+      filesToInject.push({
+        content: fileContent,
+        destPath: `${OPENCODE_CONFIG_DIR}/skills/${skill.name}`,
+        filename: 'SKILL.md',
+      });
     }
   }
 
@@ -499,6 +644,11 @@ agentConfig.post('/:id/inject/:sandboxId', async (c) => {
       filesToInject.push({
         content: rule.content,
         destPath: '/home/dev/.claude/rules',
+        filename: rule.filename,
+      });
+      filesToInject.push({
+        content: rule.content,
+        destPath: `${OPENCODE_CONFIG_DIR}/rules`,
         filename: rule.filename,
       });
     }
