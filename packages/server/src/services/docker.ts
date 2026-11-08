@@ -23,7 +23,7 @@ export async function listContainers(): Promise<ContainerInfo[]> {
       status: container.Status,
       state: mapState(container.State),
       sshPort,
-      sshCommand: sshPort ? `ssh -p ${sshPort} root@localhost` : null,
+      sshCommand: sshPort ? `ssh -p ${sshPort} dev@localhost` : null,
       volumes: extractVolumes(container.Mounts),
       ports: extractPorts(container.Ports),
       createdAt: new Date(container.Created * 1000).toISOString(),
