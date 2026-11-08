@@ -1,5 +1,9 @@
 packages:
   - packages/*
-ignoredBuiltDependencies:
-  - node-pty
-onlyBuiltDependencies: node-pty
+overrides:
+  fast-xml-parser: '>=5.3.6'
+allowBuilds:
+  cpu-features: true
+  esbuild: true
+  protobufjs: true
+  ssh2: true
