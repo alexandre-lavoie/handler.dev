@@ -13,8 +13,8 @@ import type {
   CreateVolumeRequest,
   VmVolumeMeta,
 } from '../../types/volume.js';
-import { getVmVolumeService, initializeVmVolumeService, VmVolumeService } from '../vm-volumes.js';
-import { getFirecrackerService } from '../firecracker.js';
+import { initializeVmVolumeService, VmVolumeService } from '../vm-volumes.js';
+import { FirecrackerService } from '../firecracker.js';
 
 /**
  * Converts a VM volume to the unified Volume type
@@ -73,6 +73,8 @@ export class VmVolumeAdapter {
   readonly backend = 'vm' as const;
   private volumeService: VmVolumeService | null = null;
 
+  constructor(private service: FirecrackerService) {}
+
   async isAvailable(): Promise<boolean> {
     try {
       await this.ensureInitialized();
@@ -97,8 +99,7 @@ export class VmVolumeAdapter {
   private createVmNameLookup(): (rawVmId: string) => string | undefined {
     return (rawVmId: string) => {
       try {
-        const firecrackerService = getFirecrackerService();
-        const fcVm = firecrackerService.getVm(`fc-${rawVmId}`);
+        const fcVm = this.service.getVm(`fc-${rawVmId}`);
         return fcVm?.name;
       } catch {
         return undefined;
@@ -172,9 +173,8 @@ export class VmVolumeAdapter {
    */
   private async listFilesViaSsh(rawVmId: string, mountPath: string, dirPath: string): Promise<VolumeFileInfo[] | null> {
     try {
-      const firecrackerService = getFirecrackerService();
       const fcVmId = `fc-${rawVmId}`;
-      const vm = firecrackerService.getVm(fcVmId);
+      const vm = this.service.getVm(fcVmId);
 
       if (!vm || vm.status !== 'running') {
         return null;
@@ -185,7 +185,7 @@ export class VmVolumeAdapter {
         return null;
       }
 
-      const dataDir = firecrackerService.getDataDir();
+      const dataDir = this.service.getDataDir();
       const sshKeyPath = path.join(dataDir, 'ssh-keys', 'id_ed25519');
 
       if (!fs.existsSync(sshKeyPath)) {
@@ -258,9 +258,8 @@ export class VmVolumeAdapter {
    */
   private async uploadViaSsh(rawVmId: string, mountPath: string, filename: string, content: Buffer, destPath: string): Promise<boolean> {
     try {
-      const firecrackerService = getFirecrackerService();
       const fcVmId = `fc-${rawVmId}`;
-      const vm = firecrackerService.getVm(fcVmId);
+      const vm = this.service.getVm(fcVmId);
 
       if (!vm || vm.status !== 'running') {
         return false;
@@ -273,7 +272,7 @@ export class VmVolumeAdapter {
       }
 
       // Get SSH key path
-      const dataDir = firecrackerService.getDataDir();
+      const dataDir = this.service.getDataDir();
       const sshKeyPath = path.join(dataDir, 'ssh-keys', 'id_ed25519');
 
       if (!fs.existsSync(sshKeyPath)) {
@@ -341,9 +340,8 @@ export class VmVolumeAdapter {
    */
   private async downloadViaSsh(rawVmId: string, mountPath: string, filePath: string): Promise<Buffer | null> {
     try {
-      const firecrackerService = getFirecrackerService();
       const fcVmId = `fc-${rawVmId}`;
-      const vm = firecrackerService.getVm(fcVmId);
+      const vm = this.service.getVm(fcVmId);
 
       if (!vm || vm.status !== 'running') {
         return null;
@@ -354,7 +352,7 @@ export class VmVolumeAdapter {
         return null;
       }
 
-      const dataDir = firecrackerService.getDataDir();
+      const dataDir = this.service.getDataDir();
       const sshKeyPath = path.join(dataDir, 'ssh-keys', 'id_ed25519');
 
       if (!fs.existsSync(sshKeyPath)) {
@@ -410,9 +408,8 @@ export class VmVolumeAdapter {
    */
   private async deleteViaSsh(rawVmId: string, mountPath: string, filePath: string): Promise<boolean> {
     try {
-      const firecrackerService = getFirecrackerService();
       const fcVmId = `fc-${rawVmId}`;
-      const vm = firecrackerService.getVm(fcVmId);
+      const vm = this.service.getVm(fcVmId);
 
       if (!vm || vm.status !== 'running') {
         return false;
@@ -423,7 +420,7 @@ export class VmVolumeAdapter {
         return false;
       }
 
-      const dataDir = firecrackerService.getDataDir();
+      const dataDir = this.service.getDataDir();
       const sshKeyPath = path.join(dataDir, 'ssh-keys', 'id_ed25519');
 
       if (!fs.existsSync(sshKeyPath)) {
@@ -465,14 +462,12 @@ export class VmVolumeAdapter {
 
     // Check if this is a Firecracker VM (starts with fc-)
     if (sandboxId.startsWith('fc-')) {
-      const firecrackerService = getFirecrackerService();
-
       // Get VM name for metadata
-      const vm = firecrackerService.getVm(sandboxId);
+      const vm = this.service.getVm(sandboxId);
       vmName = vm?.name;
 
       // Attach the volume in Firecracker (this will restart the VM if running)
-      await firecrackerService.attachVolume(sandboxId, {
+      await this.service.attachVolume(sandboxId, {
         id: vmVolId,
         name: vol.name,
         hostPath: volumePath,
@@ -509,14 +504,13 @@ export class VmVolumeAdapter {
 
     // Try to detach from Firecracker
     // The attachedTo field stores the raw VM ID, we need to try with fc- prefix
-    const firecrackerService = getFirecrackerService();
     const fcVmId = `fc-${vol.attachedTo}`;
 
     try {
-      const fcVm = firecrackerService.getVm(fcVmId);
+      const fcVm = this.service.getVm(fcVmId);
       if (fcVm) {
         // It's a Firecracker VM - detach the volume (this will restart the VM if running)
-        await firecrackerService.detachVolume(fcVmId, vol.name);
+        await this.service.detachVolume(fcVmId, vol.name);
       }
     } catch (error) {
       // VM might not exist anymore or might be a different type - continue with metadata cleanup

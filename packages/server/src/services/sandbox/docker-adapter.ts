@@ -5,10 +5,6 @@
  */
 
 import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { join, posix } from 'path';
-import { tmpdir } from 'os';
 import type {
   Sandbox,
   SandboxStatus,
@@ -20,10 +16,8 @@ import { DockerService, dockerService } from '../docker.js';
 import { listBuilds, getBuild, type BuildStatus } from '../build-tracker.js';
 import { getPrivateKey } from '../container-builder.js';
 import { findAvailableSshPort } from '../../utils/port.js';
-import { parseLsOutput } from './files.js';
 import { getDockerMetrics, type GuestMetrics } from '../guest-metrics.js';
 import { detectAgentsInDocker, type AgentInfo } from '../agent-detect.js';
-import { expandSandboxPath } from './upload.js';
 
 /**
  * Maps Docker container state to unified SandboxStatus
@@ -313,125 +307,42 @@ export class DockerAdapter implements SandboxAdapter {
 
   async uploadFile(id: string, file: SandboxFileUpload): Promise<string> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    const destinationPath = file.destinationPath || '/home/dev/workspace';
-    const remotePath = `${destinationPath}/${file.filename}`;
-
-    try {
-      execFileSync('docker', ['exec', containerId, 'mkdir', '-p', posix.dirname(remotePath)], { stdio: 'pipe' });
-    } catch {
-      // docker cp reports a useful error if the destination is unavailable.
-    }
-    execFileSync('docker', ['cp', file.sourcePath, `${containerId}:${remotePath}`], { stdio: 'pipe' });
-    try {
-      execFileSync('docker', ['exec', containerId, 'chown', '-R', 'dev:dev', remotePath], { stdio: 'pipe' });
-    } catch {
-      // Ownership changes are best-effort.
-    }
-
-    return remotePath;
+    return this.service.uploadContainerFile(containerId, file);
   }
 
   async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-upload-files-'));
-    try {
-      for (const [index, file] of files.entries()) {
-        const destination = expandSandboxPath(file.destPath, '/home/dev');
-        const remotePath = posix.join(destination, file.filename);
-        const sourcePath = join(tempDir, `${index}-${file.filename}`);
-        writeFileSync(sourcePath, file.content);
-
-        execFileSync('docker', ['exec', containerId, 'mkdir', '-p', destination], { stdio: 'pipe' });
-        execFileSync('docker', ['cp', sourcePath, `${containerId}:${remotePath}`], { stdio: 'pipe' });
-        try {
-          execFileSync('docker', ['exec', containerId, 'chown', 'dev:dev', remotePath], { stdio: 'pipe' });
-        } catch {
-          // Ownership changes are best-effort.
-        }
-      }
-      return files.length;
-    } finally {
-      rmSync(tempDir, { recursive: true });
-    }
+    return this.service.uploadContainerFiles(containerId, files);
   }
 
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    const destinationPath = directory.destinationPath || '/home/dev/workspace';
-    const remoteArchive = `/tmp/handler-upload-${process.pid}-${Date.now()}.tar.gz`;
-
-    try {
-      execFileSync('docker', ['exec', containerId, 'mkdir', '-p', destinationPath], { stdio: 'pipe' });
-    } catch {
-      // Extraction reports a useful error if the destination is unavailable.
-    }
-    execFileSync('docker', ['cp', directory.archivePath, `${containerId}:${remoteArchive}`], { stdio: 'pipe' });
-    try {
-      execFileSync('docker', ['exec', containerId, 'tar', '-xzf', remoteArchive, '-C', destinationPath], { stdio: 'pipe' });
-    } finally {
-      try {
-        execFileSync('docker', ['exec', containerId, 'rm', remoteArchive], { stdio: 'pipe' });
-      } catch {
-        // Remote cleanup is best-effort.
-      }
-    }
-    try {
-      execFileSync('docker', ['exec', containerId, 'chown', '-R', 'dev:dev', destinationPath], { stdio: 'pipe' });
-    } catch {
-      // Ownership changes are best-effort.
-    }
-
-    return destinationPath;
+    return this.service.uploadContainerDirectory(containerId, directory);
   }
 
   async listFiles(id: string, path: string): Promise<SandboxFileInfo[]> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    let output: string;
-    try {
-      output = execFileSync('docker', ['exec', containerId, 'ls', '-la', '--time-style=long-iso', path], {
-        encoding: 'utf-8',
-        timeout: 30_000,
-      });
-    } catch {
-      output = execFileSync('docker', ['exec', containerId, 'ls', '-la', path], {
-        encoding: 'utf-8',
-        timeout: 30_000,
-      });
-    }
-    return parseLsOutput(output);
+    return this.service.listContainerFiles(containerId, path);
   }
 
   async downloadFile(id: string, path: string): Promise<Buffer> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-download-'));
-    const destination = join(tempDir, 'downloaded-file');
-    try {
-      execFileSync('docker', ['cp', `${containerId}:${path}`, destination], {
-        stdio: 'pipe',
-        timeout: 60_000,
-      });
-      return readFileSync(destination);
-    } finally {
-      rmSync(tempDir, { recursive: true });
-    }
+    return this.service.downloadContainerFile(containerId, path);
   }
 
   async getMetrics(id: string): Promise<GuestMetrics> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    return getDockerMetrics(containerId, id);
+    return getDockerMetrics(this.service, containerId, id);
   }
 
   async getAgents(id: string): Promise<AgentInfo[]> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    return detectAgentsInDocker(containerId, id);
+    return detectAgentsInDocker(this.service, containerId, id);
   }
 
   async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
-    return execFileSync('docker', ['exec', containerId, 'sh', '-c', command], {
-      encoding: 'utf-8',
-      timeout: timeoutMs,
-    });
+    return this.service.execContainer(containerId, command, timeoutMs);
   }
 
   async listImages(): Promise<ImageInfo[]> {

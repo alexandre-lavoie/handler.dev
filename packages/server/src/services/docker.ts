@@ -1,6 +1,13 @@
 import Docker from 'dockerode';
 import { PassThrough } from 'stream';
+import { createReadStream } from 'fs';
+import { readFile } from 'fs/promises';
+import { posix } from 'path';
+import * as tar from 'tar-stream';
 import type { ContainerInfo, VolumeInfo, ImageInfo } from '../types/index.js';
+import type { SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload } from './sandbox/types.js';
+import { parseLsOutput } from './sandbox/files.js';
+import { expandSandboxPath } from './sandbox/upload.js';
 import { getConfig } from './config.js';
 
 const CONTAINER_LABEL = 'handler';
@@ -807,6 +814,132 @@ export class DockerService {
         }
       });
       stream.on('error', reject);
+    });
+  }
+
+  async uploadContainerFile(containerId: string, file: SandboxFileUpload): Promise<string> {
+    const destinationPath = file.destinationPath || '/home/dev/workspace';
+    const remotePath = posix.join(destinationPath, file.filename);
+    const content = await readFile(file.sourcePath);
+
+    await this.execContainer(containerId, `mkdir -p ${JSON.stringify(destinationPath)}`);
+    const archive = tar.pack();
+    archive.entry({ name: file.filename, mode: 0o644 }, content);
+    archive.finalize();
+    await this.docker.getContainer(containerId).putArchive(archive, { path: destinationPath });
+    try {
+      await this.execInContainer(containerId, ['chown', '-R', 'dev:dev', remotePath]);
+    } catch {
+      // Ownership changes are best-effort.
+    }
+
+    return remotePath;
+  }
+
+  async uploadContainerFiles(containerId: string, files: SandboxFileContent[]): Promise<number> {
+    if (files.length === 0) return 0;
+
+    const archive = tar.pack();
+    const remotePaths: string[] = [];
+    for (const file of files) {
+      const destination = expandSandboxPath(file.destPath, '/home/dev');
+      const remotePath = posix.join(destination, file.filename);
+      remotePaths.push(remotePath);
+      archive.entry(
+        { name: remotePath.replace(/^\//, ''), mode: 0o644 },
+        typeof file.content === 'string' ? Buffer.from(file.content) : file.content,
+      );
+    }
+    archive.finalize();
+    await this.docker.getContainer(containerId).putArchive(archive, { path: '/' });
+
+    for (const remotePath of remotePaths) {
+      try {
+        await this.execInContainer(containerId, ['chown', 'dev:dev', remotePath]);
+      } catch {
+        // Ownership changes are best-effort.
+      }
+    }
+    return files.length;
+  }
+
+  async uploadContainerDirectory(containerId: string, directory: SandboxDirectoryUpload): Promise<string> {
+    const destinationPath = directory.destinationPath || '/home/dev/workspace';
+    await this.execContainer(containerId, `mkdir -p ${JSON.stringify(destinationPath)}`);
+    await this.docker.getContainer(containerId).putArchive(
+      createReadStream(directory.archivePath),
+      { path: destinationPath },
+    );
+    try {
+      await this.execInContainer(containerId, ['chown', '-R', 'dev:dev', destinationPath]);
+    } catch {
+      // Ownership changes are best-effort.
+    }
+
+    return destinationPath;
+  }
+
+  async listContainerFiles(containerId: string, path: string): Promise<SandboxFileInfo[]> {
+    let output: string;
+    try {
+      output = await this.execContainer(
+        containerId,
+        `ls -la --time-style=long-iso ${JSON.stringify(path)}`,
+        30_000,
+      );
+    } catch {
+      output = await this.execContainer(containerId, `ls -la ${JSON.stringify(path)}`, 30_000);
+    }
+    return parseLsOutput(output);
+  }
+
+  async downloadContainerFile(containerId: string, path: string): Promise<Buffer> {
+    const archive = await this.docker.getContainer(containerId).getArchive({ path });
+    const extract = tar.extract();
+
+    return new Promise<Buffer>((resolve, reject) => {
+      let settled = false;
+      extract.on('entry', (header, stream, next) => {
+        if (settled || header.type !== 'file') {
+          stream.resume();
+          stream.on('end', next);
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => {
+          settled = true;
+          resolve(Buffer.concat(chunks));
+          next();
+        });
+        stream.on('error', reject);
+      });
+      extract.on('finish', () => {
+        if (!settled) reject(new Error(`No file found at ${path}`));
+      });
+      extract.on('error', reject);
+      archive.on('error', reject);
+      archive.pipe(extract);
+    });
+  }
+
+  async execContainer(containerId: string, command: string, timeoutMs = 10_000): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`Container command timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      this.execInContainer(containerId, ['sh', '-c', command]).then(
+        (output) => {
+          clearTimeout(timeout);
+          resolve(output);
+        },
+        (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      );
     });
   }
 }

@@ -11,7 +11,7 @@ import type {
   DaytonaVolumeMeta,
   VolumeStatus,
 } from '../../types/volume.js';
-import { getDaytonaService, DaytonaService } from '../daytona.js';
+import { DaytonaService } from '../daytona.js';
 
 /**
  * Maps Daytona volume state to unified VolumeStatus
@@ -61,36 +61,20 @@ function daytonaVolumeToVolume(vol: {
 
 export class DaytonaVolumeAdapter {
   readonly backend = 'daytona' as const;
-  private daytonaService: DaytonaService | null = null;
+
+  constructor(private service: DaytonaService) {}
 
   async isAvailable(): Promise<boolean> {
     try {
-      const service = this.getDaytonaService();
-      return service ? await service.isAvailable() : false;
+      return await this.service.isAvailable();
     } catch {
       return false;
     }
   }
 
-  private getDaytonaService(): DaytonaService | null {
-    if (!this.daytonaService) {
-      try {
-        this.daytonaService = getDaytonaService();
-      } catch {
-        return null;
-      }
-    }
-    return this.daytonaService;
-  }
-
   async list(): Promise<Volume[]> {
-    const service = this.getDaytonaService();
-    if (!service) {
-      return [];
-    }
-
     try {
-      const volumes = await service.listVolumes();
+      const volumes = await this.service.listVolumes();
       return volumes.map(daytonaVolumeToVolume);
     } catch {
       return [];
@@ -98,16 +82,11 @@ export class DaytonaVolumeAdapter {
   }
 
   async get(id: string): Promise<Volume | null> {
-    const service = this.getDaytonaService();
-    if (!service) {
-      return null;
-    }
-
     // Extract the Daytona volume ID from the unified ID
     const daytonaVolId = id.replace(/^vol-daytona-/, '');
 
     try {
-      const vol = await service.getVolume(daytonaVolId);
+      const vol = await this.service.getVolume(daytonaVolId);
       return vol ? daytonaVolumeToVolume(vol) : null;
     } catch {
       return null;
@@ -115,23 +94,13 @@ export class DaytonaVolumeAdapter {
   }
 
   async create(request: CreateVolumeRequest): Promise<Volume> {
-    const service = this.getDaytonaService();
-    if (!service) {
-      throw new Error('Daytona service not available');
-    }
-
-    const vol = await service.createVolume(request.name);
+    const vol = await this.service.createVolume(request.name);
     return daytonaVolumeToVolume(vol);
   }
 
   async delete(id: string): Promise<void> {
-    const service = this.getDaytonaService();
-    if (!service) {
-      throw new Error('Daytona service not available');
-    }
-
     const daytonaVolId = id.replace(/^vol-daytona-/, '');
-    await service.deleteVolume(daytonaVolId);
+    await this.service.deleteVolume(daytonaVolId);
   }
 
   async listFiles(id: string, path: string = '/'): Promise<VolumeFileInfo[]> {

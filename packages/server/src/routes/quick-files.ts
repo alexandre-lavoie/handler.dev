@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { dirname, basename } from 'path';
 import * as quickFileService from '../services/quick-files.js';
 import { injectFilesIntoSandbox } from '../services/sandbox-inject.js';
-import type { FileToInject } from '../services/sandbox-inject.js';
+import type { SandboxFileContent as FileToInject } from '../services/sandbox/types.js';
 
 const quickFiles = new Hono();
 

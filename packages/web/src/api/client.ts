@@ -540,7 +540,7 @@ export async function browseDirectory(path?: string): Promise<BrowseDirectoryRes
 
 // Quick Launch config
 export interface QuickLaunchConfig {
-  backend: 'docker' | 'firecracker' | 'daytona' | 'aws' | 'azure' | 'gcp' | 'digitalocean' | 'linode';
+  backend: string;
   image?: string;
   ports?: number[];
   vcpus?: number;
@@ -2104,7 +2104,7 @@ export async function downloadBaseImage(
 /**
  * Backend types for sandboxes
  */
-export type SandboxBackend = 'docker' | 'firecracker' | 'daytona' | 'aws' | 'azure' | 'gcp' | 'digitalocean' | 'linode';
+export type SandboxBackend = string;
 
 /**
  * Unified status across all backends
@@ -2692,7 +2692,7 @@ export async function listSandboxFiles(id: string, path: string = '/'): Promise<
 /**
  * Volume backend types
  */
-export type UnifiedVolumeBackend = 'docker' | 'vm' | 'daytona';
+export type UnifiedVolumeBackend = string;
 
 /**
  * Volume status types

@@ -10,7 +10,7 @@ import type {
   CreateVolumeRequest,
   DockerVolumeMeta,
 } from '../../types/volume.js';
-import { dockerService } from '../docker.js';
+import { DockerService } from '../docker.js';
 
 /**
  * Converts a Docker volume to the unified Volume type
@@ -43,9 +43,11 @@ function dockerVolumeToVolume(vol: {
 export class DockerVolumeAdapter {
   readonly backend = 'docker' as const;
 
+  constructor(private service: DockerService) {}
+
   async isAvailable(): Promise<boolean> {
     try {
-      await dockerService.listVolumes();
+      await this.service.listVolumes();
       return true;
     } catch {
       return false;
@@ -53,23 +55,23 @@ export class DockerVolumeAdapter {
   }
 
   async list(): Promise<Volume[]> {
-    const volumes = await dockerService.listVolumes();
+    const volumes = await this.service.listVolumes();
     return volumes.map(dockerVolumeToVolume);
   }
 
   async get(id: string): Promise<Volume | null> {
     // Extract the volume name from the unified ID
     const name = id.replace(/^vol-docker-/, '');
-    const volumes = await dockerService.listVolumes();
+    const volumes = await this.service.listVolumes();
     const vol = volumes.find((v) => v.name === name);
     return vol ? dockerVolumeToVolume(vol) : null;
   }
 
   async create(request: CreateVolumeRequest): Promise<Volume> {
-    await dockerService.createVolume(request.name);
+    await this.service.createVolume(request.name);
 
     // Fetch the created volume to get full info
-    const volumes = await dockerService.listVolumes();
+    const volumes = await this.service.listVolumes();
     const vol = volumes.find((v) => v.name === request.name);
 
     if (!vol) {
@@ -81,12 +83,12 @@ export class DockerVolumeAdapter {
 
   async delete(id: string): Promise<void> {
     const name = id.replace(/^vol-docker-/, '');
-    await dockerService.removeVolume(name);
+    await this.service.removeVolume(name);
   }
 
   async listFiles(id: string, path: string = '/'): Promise<VolumeFileInfo[]> {
     const name = id.replace(/^vol-docker-/, '');
-    const files = await dockerService.getVolumeFiles(name);
+    const files = await this.service.getVolumeFiles(name);
 
     // Docker getVolumeFiles returns flat file list, convert to VolumeFileInfo
     return files.map((f: string) => ({
@@ -98,7 +100,7 @@ export class DockerVolumeAdapter {
 
   async uploadFile(id: string, filename: string, content: Buffer): Promise<void> {
     const name = id.replace(/^vol-docker-/, '');
-    await dockerService.uploadFileToVolume(name, filename, content);
+    await this.service.uploadFileToVolume(name, filename, content);
   }
 
   async downloadFile(id: string, filePath: string): Promise<Buffer> {

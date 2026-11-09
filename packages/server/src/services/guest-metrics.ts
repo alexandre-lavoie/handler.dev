@@ -6,7 +6,7 @@
 
 import Docker from 'dockerode';
 import { spawnSync } from 'child_process';
-import { dockerService } from './docker.js';
+import { DockerService } from './docker.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -165,7 +165,7 @@ function getCached(sandboxId: string): GuestMetrics | null {
   return null;
 }
 
-export async function getDockerMetrics(containerId: string, sandboxId: string): Promise<GuestMetrics> {
+export async function getDockerMetrics(service: DockerService, containerId: string, sandboxId: string): Promise<GuestMetrics> {
   const cached = getCached(sandboxId);
   if (cached) return cached;
 
@@ -178,7 +178,7 @@ export async function getDockerMetrics(containerId: string, sandboxId: string): 
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]),
       Promise.race([
-        dockerService.execInContainer(containerId, ['df', '-B1', '/']),
+        service.execInContainer(containerId, ['df', '-B1', '/']),
         new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
       ]),
     ]);

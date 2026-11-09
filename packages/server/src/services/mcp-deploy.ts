@@ -9,7 +9,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type {
   MCPDeployment,
   MCPDeploymentStatus,
@@ -23,7 +23,7 @@ import type {
 } from '../types/mcp-deployment.js';
 import type { SandboxBackend } from '../types/sandbox.js';
 import { getServerByName, type MCPServer } from './mcp-registry.js';
-import { getSandboxService } from './sandbox/index.js';
+import { ensureSandboxService } from './sandbox/index.js';
 import { getDataPath } from './data-dir.js';
 
 async function getDeploymentsFile() { return getDataPath('mcp-deployments.json'); }
@@ -201,7 +201,7 @@ export async function deploy(
     log(`Provisioning ${backend} sandbox with image ${image}...`);
     onProgress?.({ status: 'provisioning', message: `Provisioning ${backend} sandbox...` });
 
-    const sandboxService = getSandboxService();
+    const sandboxService = await ensureSandboxService();
     const ports = transport !== 'stdio'
       ? [{ container: DEFAULT_MCP_PORT, host: 0 }]
       : [];
@@ -243,32 +243,9 @@ export async function deploy(
     const installCmds = getInstallCommands(server, installMethod);
     for (const cmd of installCmds) {
       log(`Running: ${cmd}`);
-      // Execute install command in sandbox
-      // For Docker, use docker exec; for VMs/cloud, use SSH
-      const updatedSandbox = await sandboxService.get(sandbox.id);
-      if (updatedSandbox?.terminalType === 'docker-exec' && updatedSandbox.backendMeta?.type === 'docker') {
-        const containerId = (updatedSandbox.backendMeta as { containerId: string }).containerId;
-        try {
-          execFileSync('docker', ['exec', containerId, 'sh', '-c', cmd], {
-            timeout: 300000,
-            stdio: 'pipe',
-          });
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-          log(`Install command failed: ${errorMsg}`, 'warn');
-        }
-      } else if (updatedSandbox?.sshCommand) {
-        // SSH-based execution
-        const sshBase = updatedSandbox.sshCommand.replace(/\s*$/, '');
-        try {
-          execSync(`${sshBase} "${cmd.replace(/"/g, '\\"')}"`, {
-            timeout: 300000,
-            stdio: 'pipe',
-          });
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-          log(`Install command failed: ${errorMsg}`, 'warn');
-        }
+      const output = await sandboxService.exec(sandbox.id, cmd, 300_000);
+      if (output === null) {
+        log('Install command failed', 'warn');
       }
     }
 
@@ -278,35 +255,16 @@ export async function deploy(
     onProgress?.({ status: 'starting', message: 'Starting MCP server process...' });
 
     const fullCommand = `${startCmd.command} ${startCmd.args.join(' ')}`;
-    const updatedSandbox = await sandboxService.get(sandbox.id);
-
-    if (updatedSandbox?.terminalType === 'docker-exec' && updatedSandbox.backendMeta?.type === 'docker') {
-      const containerId = (updatedSandbox.backendMeta as { containerId: string }).containerId;
-      // Start in background for stdio transport
-      const bgSuffix = transport === 'stdio' ? '' : ' &';
-      const dockerArgs = ['exec', '-d'];
-      for (const [k, v] of Object.entries(deployment.env)) {
-        dockerArgs.push('-e', `${k}=${v}`);
-      }
-      dockerArgs.push(containerId, 'sh', '-c', `${fullCommand}${bgSuffix}`);
-      try {
-        execFileSync('docker', dockerArgs, { timeout: 30000, stdio: 'pipe' });
-      } catch (err) {
-        log(`Start command output: ${err instanceof Error ? err.message : 'Unknown'}`, 'warn');
-      }
-    } else if (updatedSandbox?.sshCommand) {
-      const sshBase = updatedSandbox.sshCommand.replace(/\s*$/, '');
-      const envStr = Object.entries(deployment.env)
-        .map(([k, v]) => `${k}="${v}"`)
-        .join(' ');
-      try {
-        execSync(
-          `${sshBase} "nohup ${envStr ? envStr + ' ' : ''}${fullCommand.replace(/"/g, '\\"')} > /tmp/mcp-server.log 2>&1 &"`,
-          { timeout: 30000, stdio: 'pipe' }
-        );
-      } catch (err) {
-        log(`Start command output: ${err instanceof Error ? err.message : 'Unknown'}`, 'warn');
-      }
+    const envStr = Object.entries(deployment.env)
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .join(' ');
+    const startOutput = await sandboxService.exec(
+      sandbox.id,
+      `nohup ${envStr ? `${envStr} ` : ''}${fullCommand} > /tmp/mcp-server.log 2>&1 < /dev/null &`,
+      30_000,
+    );
+    if (startOutput === null) {
+      log('Start command failed', 'warn');
     }
 
     // 5. Detect port and build connection config
@@ -383,7 +341,7 @@ export async function stopDeployment(id: string): Promise<MCPDeployment> {
   if (!deployment) throw new Error(`Deployment '${id}' not found`);
 
   try {
-    const sandboxService = getSandboxService();
+    const sandboxService = await ensureSandboxService();
     await sandboxService.stop(deployment.sandboxId);
     deployment.status = 'stopped';
     deployment.stoppedAt = new Date().toISOString();
@@ -407,21 +365,21 @@ export async function restartDeployment(id: string): Promise<MCPDeployment> {
   if (!deployment) throw new Error(`Deployment '${id}' not found`);
 
   try {
-    const sandboxService = getSandboxService();
+    const sandboxService = await ensureSandboxService();
     await sandboxService.start(deployment.sandboxId);
 
     // Re-start the MCP server process
-    const sandbox = await sandboxService.get(deployment.sandboxId);
     const fullCommand = `${deployment.command} ${deployment.args.join(' ')}`;
+    const envStr = Object.entries(deployment.env)
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .join(' ');
+    await sandboxService.exec(
+      deployment.sandboxId,
+      `nohup ${envStr ? `${envStr} ` : ''}${fullCommand} > /tmp/mcp-server.log 2>&1 < /dev/null &`,
+      30_000,
+    );
 
-    if (sandbox?.terminalType === 'docker-exec' && sandbox.backendMeta?.type === 'docker') {
-      const containerId = (sandbox.backendMeta as { containerId: string }).containerId;
-      try {
-        execFileSync('docker', ['exec', '-d', containerId, 'sh', '-c', fullCommand], { timeout: 30000, stdio: 'pipe' });
-      } catch {
-        // Process may already be running
-      }
-    }
+    const sandbox = await sandboxService.get(deployment.sandboxId);
 
     deployment.status = 'running';
     deployment.startedAt = new Date().toISOString();
@@ -448,7 +406,7 @@ export async function deleteDeployment(id: string): Promise<void> {
 
   // Clean up sandbox
   try {
-    const sandboxService = getSandboxService();
+    const sandboxService = await ensureSandboxService();
     await sandboxService.delete(deployment.sandboxId);
   } catch (error) {
     console.warn(`Failed to delete sandbox for deployment ${id}:`, error);

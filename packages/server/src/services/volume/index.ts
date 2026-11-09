@@ -17,6 +17,9 @@ import type {
 import { DockerVolumeAdapter } from './docker-adapter.js';
 import { VmVolumeAdapter } from './vm-adapter.js';
 import { DaytonaVolumeAdapter } from './daytona-adapter.js';
+import { getDockerService } from '../docker.js';
+import { getFirecrackerService } from '../firecracker.js';
+import { getDaytonaService } from '../daytona.js';
 
 interface VolumeAdapter {
   backend: VolumeBackend;
@@ -47,21 +50,21 @@ export class VolumeService {
     console.log('[VolumeService] Initializing...');
 
     // Register Docker adapter
-    const dockerAdapter = new DockerVolumeAdapter();
+    const dockerAdapter = new DockerVolumeAdapter(getDockerService());
     if (await dockerAdapter.isAvailable()) {
       this.adapters.set('docker', dockerAdapter);
       console.log('[VolumeService] Docker volume adapter registered');
     }
 
     // Register VM adapter
-    const vmAdapter = new VmVolumeAdapter();
+    const vmAdapter = new VmVolumeAdapter(getFirecrackerService());
     if (await vmAdapter.isAvailable()) {
       this.adapters.set('vm', vmAdapter);
       console.log('[VolumeService] VM volume adapter registered');
     }
 
     // Register Daytona adapter
-    const daytonaAdapter = new DaytonaVolumeAdapter();
+    const daytonaAdapter = new DaytonaVolumeAdapter(getDaytonaService());
     if (await daytonaAdapter.isAvailable()) {
       this.adapters.set('daytona', daytonaAdapter);
       console.log('[VolumeService] Daytona volume adapter registered');

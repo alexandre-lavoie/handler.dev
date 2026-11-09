@@ -6,7 +6,7 @@ import { dirname } from 'path';
 import { getDataPath } from '../services/data-dir.js';
 import * as agentConfigService from '../services/agent-config.js';
 import { injectFilesIntoSandbox } from '../services/sandbox-inject.js';
-import type { FileToInject } from '../services/sandbox-inject.js';
+import type { SandboxFileContent as FileToInject } from '../services/sandbox/types.js';
 import type { AgentConfigPreset, MCPServerConfig, SkillFrontmatter, SubagentConfig, PluginRef, PluginMarketplace } from '../types/agent-config.js';
 
 const agentConfig = new Hono();

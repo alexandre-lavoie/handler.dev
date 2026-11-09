@@ -4,7 +4,7 @@
  * Results are cached in memory with a 15-second TTL.
  */
 
-import { dockerService } from './docker.js';
+import { DockerService } from './docker.js';
 import { spawnSync } from 'child_process';
 
 export type AgentId = 'claude' | 'codex' | 'gemini' | 'opencode';
@@ -55,7 +55,7 @@ function parseDetectionOutput(output: string): AgentInfo[] {
   }));
 }
 
-export async function detectAgentsInDocker(containerId: string, sandboxId: string): Promise<AgentInfo[]> {
+export async function detectAgentsInDocker(service: DockerService, containerId: string, sandboxId: string): Promise<AgentInfo[]> {
   const cached = cache.get(sandboxId);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.agents;
@@ -63,7 +63,7 @@ export async function detectAgentsInDocker(containerId: string, sandboxId: strin
 
   try {
     const output = await Promise.race([
-      dockerService.execInContainer(containerId, ['sh', '-c', DETECTION_SCRIPT]),
+      service.execInContainer(containerId, ['sh', '-c', DETECTION_SCRIPT]),
       new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
     ]);
     const agents = parseDetectionOutput(output);
