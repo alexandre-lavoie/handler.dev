@@ -5,10 +5,6 @@
 import { getGitHubService } from './github.js';
 import { getSandboxService } from './sandbox/index.js';
 import type { SandboxBackend } from '../types/sandbox.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
 
 export interface StartWorkOptions {
   repoFullName: string;       // e.g., "user/repo"
@@ -54,43 +50,25 @@ async function waitForSandboxRunning(sandboxId: string, timeoutMs = 120000): Pro
 }
 
 /**
- * Execute a command in a sandbox
- */
-async function execInSandbox(sandboxId: string, command: string): Promise<{ stdout: string; stderr: string }> {
-  const service = getSandboxService();
-  const sandbox = await service.get(sandboxId);
-
-  if (!sandbox) {
-    throw new Error('Sandbox not found');
-  }
-
-  if (sandbox.backend === 'docker') {
-    // For Docker, use docker exec
-    const result = await execAsync(`docker exec ${sandboxId} bash -c "${command.replace(/"/g, '\\"')}"`);
-    return result;
-  }
-
-  // For VMs and other backends, we'll need to use SSH
-  // This is a simplified version - full implementation would handle different backends
-  throw new Error(`execInSandbox not yet implemented for ${sandbox.backend} backend`);
-}
-
-/**
  * Inject git credentials into sandbox using .netrc
  */
 async function injectGitCredentials(sandboxId: string, token: string): Promise<void> {
+  const service = getSandboxService();
+
   // Create .netrc file for git authentication
-  const netrcContent = `machine github.com
+  const netrcContent = `
+machine github.com
 login oauth
 password ${token}
-`;
+`.trim();
 
-  // Write to sandbox
-  await execInSandbox(sandboxId, `echo '${netrcContent}' > ~/.netrc && chmod 600 ~/.netrc`);
+  const cmds = [
+    `echo '${netrcContent}' > ~/.netrc && chmod 600 ~/.netrc`,
+    `git config --global url."https://github.com/".insteadOf "git@github.com:"`,
+    `git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"`,
+  ];
 
-  // Also configure git to use HTTPS instead of SSH for GitHub
-  await execInSandbox(sandboxId, `git config --global url."https://github.com/".insteadOf "git@github.com:"`);
-  await execInSandbox(sandboxId, `git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"`);
+  if (await service.exec(sandboxId, cmds.join(" && ")) === null) throw new Error(`Failed to execute command in sandbox ${sandboxId}`);
 }
 
 /**
@@ -150,10 +128,13 @@ export async function startWork(options: StartWorkOptions): Promise<WorkResult> 
     const clonePath = `/root/${repoName}`;
 
     console.log(`[Work] Cloning ${cloneUrl}...`);
-    await execInSandbox(sandboxId, `git clone --branch ${targetBranch} ${cloneUrl} ${clonePath}`);
 
-    // Change to repo directory (set as working directory for future commands)
-    await execInSandbox(sandboxId, `cd ${clonePath} && pwd`);
+    const cmds = [
+      `git clone --branch ${targetBranch} ${cloneUrl} ${clonePath}`,
+      `cd ${clonePath} && pwd`,
+    ];
+
+    if (await service.exec(sandboxId, cmds.join(" && ")) === null) throw new Error(`Failed to execute command in sandbox ${sandboxId}`);
 
     // Inject agent config if specified
     if (agentConfigId) {

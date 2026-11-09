@@ -12,18 +12,15 @@ import { EventEmitter } from 'events';
 import { DATA_DIR } from '../../lib/paths.js';
 import type {
   Template,
-  TemplateType,
-  TemplateStatus,
   TemplateArtifact,
-  TemplateArtifactBackend,
   CreateTemplateRequest,
   UpdateTemplateRequest,
   BuildTemplateRequest,
   BuildJob,
   TemplateListFilter,
 } from '../../types/template.js';
-import { dockerService } from '../docker.js';
 import * as containerBuilder from '../container-builder.js';
+import { ensureSandboxService } from '../sandbox/index.js';
 
 export class TemplateService extends EventEmitter {
   private templatesDir: string;
@@ -85,7 +82,8 @@ export class TemplateService extends EventEmitter {
    */
   private async syncDockerImages(): Promise<void> {
     try {
-      const images = await dockerService.listImages();
+      const sandboxService = await ensureSandboxService();
+      const images = await sandboxService.listImages();
 
       for (const image of images) {
         // Skip images without tags

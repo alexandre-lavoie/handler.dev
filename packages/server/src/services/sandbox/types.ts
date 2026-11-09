@@ -12,6 +12,7 @@ import type {
 } from '../../types/sandbox.js';
 import type { GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import type { ImageInfo } from '../../types/index.js';
 
 export interface SandboxLogOptions {
   tail?: number;
@@ -22,6 +23,12 @@ export interface SandboxFileUpload {
   sourcePath: string;
   filename: string;
   destinationPath?: string;
+}
+
+export interface SandboxFileContent {
+  content: string | Buffer;
+  destPath: string;
+  filename: string;
 }
 
 export interface SandboxDirectoryUpload {
@@ -130,6 +137,11 @@ export interface SandboxAdapter {
   uploadFile(id: string, file: SandboxFileUpload): Promise<string>;
 
   /**
+   * Upload multiple in-memory files to a sandbox
+   */
+  uploadFiles(id: string, files: SandboxFileContent[]): Promise<number>;
+
+  /**
    * Upload and extract a local directory archive in a sandbox
    */
   uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string>;
@@ -153,6 +165,16 @@ export interface SandboxAdapter {
    * Get detected coding agents for a sandbox
    */
   getAgents(id: string): Promise<AgentInfo[]>;
+
+  /**
+   * Execute a shell command in a running sandbox
+   */
+  exec(id: string, command: string, timeoutMs?: number): Promise<string>;
+
+  /**
+   * List images provided by this backend, when supported
+   */
+  listImages?(): Promise<ImageInfo[]>;
 }
 
 /**

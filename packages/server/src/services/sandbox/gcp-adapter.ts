@@ -4,7 +4,7 @@
  * Converts GCP Compute Engine instances to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -18,10 +18,11 @@ import {
   GCP_SSH_KEY_PATH,
   type GcpSizeClass,
 } from '../gcp.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { downloadFileViaScp, listFilesViaSsh } from './files.js';
 import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps GCP instance status to unified SandboxStatus
@@ -213,6 +214,21 @@ export class GcpAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.gcp.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'handler',
+      home: '/home/handler',
+      keyContent: key,
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
@@ -257,5 +273,20 @@ export class GcpAdapter implements SandboxAdapter {
 
   async getAgents(_id: string): Promise<AgentInfo[]> {
     return [];
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.gcp.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return execViaSsh({
+      command,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'handler',
+      keyContent: key,
+      timeoutMs,
+    });
   }
 }

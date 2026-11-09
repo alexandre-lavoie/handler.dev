@@ -12,8 +12,6 @@
  *   idle        — shell prompt, nothing happening (hidden)
  */
 
-import { safeExec } from '../lib/safe-exec.js';
-import { execInSandbox } from '../lib/exec-in-sandbox.js';
 import { getOpenRouterApiKey } from './ai.js';
 import { getConfig } from './config.js';
 import { listByContainer, listByVm } from './session-store.js';
@@ -32,6 +30,8 @@ export interface CachedSummary {
   summary: string;
   updatedAt: number;
 }
+
+type SandboxCommandExecutor = (command: string, timeoutMs?: number) => Promise<string | null>;
 
 const cache = new Map<string, CachedSummary>();
 
@@ -75,7 +75,8 @@ idle|shell prompt`;
  */
 export async function getTerminalSummary(
   sandbox: { id: string; backend: string; guestIp?: string },
-  tmuxSession?: string
+  tmuxSession: string | undefined,
+  execCommand: SandboxCommandExecutor,
 ): Promise<CachedSummary | null> {
   // Check if feature is enabled
   const config = await getConfig();
@@ -93,7 +94,7 @@ export async function getTerminalSummary(
   }
 
   // TTL expired — attempt refresh, but never discard the old value on failure
-  const content = await captureTerminalContent(sandbox, tmuxSession);
+  const content = await captureTerminalContent(sandbox, tmuxSession, execCommand);
   if (!content || content.trim().length === 0) {
     // Capture failed — return stale cache (better than nothing)
     return cached || null;
@@ -124,37 +125,29 @@ export async function getTerminalSummary(
  */
 async function captureTerminalContent(
   sandbox: { id: string; backend: string; guestIp?: string },
-  overrideSession?: string
+  overrideSession: string | undefined,
+  execCommand: SandboxCommandExecutor,
 ): Promise<string | null> {
   try {
     const tmuxSession = overrideSession ?? findActiveTmuxSession(sandbox);
     if (!tmuxSession) {
-      const fallback = await captureViaExecInSandbox(sandbox);
+      const fallback = await captureFromAvailableSession(execCommand);
       if (!fallback) {
         console.log(`[TerminalSummary] No tmux session found for ${sandbox.id} (backend: ${sandbox.backend})`);
       }
       return fallback;
     }
 
-    if (sandbox.backend === 'docker') {
-      const containerId = sandbox.id.startsWith('docker-') ? sandbox.id.slice(7) : sandbox.id;
-      return await safeExec('docker', [
-        'exec', containerId, 'tmux', 'capture-pane',
-        '-t', tmuxSession, '-p', '-S', `-${CAPTURE_LINES}`,
-      ], { timeout: 5000 });
-    }
-
-    // VM backends — capture via execInSandbox. Validate the session name to keep
-    // it shell-safe (tmux session names from our session store are alnum + - _ ., but
-    // a malicious client could pass arbitrary strings through the query param).
+    // Validate the session name to keep it shell-safe (tmux session names from our
+    // session store are alnum + - _ ., but a malicious client could pass arbitrary
+    // strings through the query param).
     if (!/^[a-zA-Z0-9_.-]+$/.test(tmuxSession)) {
       console.warn(`[TerminalSummary] Rejecting unsafe tmux session name: ${tmuxSession}`);
       return null;
     }
-    return await execInSandbox(
-      sandbox,
+    return await execCommand(
       `tmux capture-pane -t ${tmuxSession} -p -S -${CAPTURE_LINES} 2>/dev/null`,
-      { timeout: 5000 }
+      5000,
     );
   } catch (err) {
     console.warn(`[TerminalSummary] Capture failed for ${sandbox.id}:`, err instanceof Error ? err.message : err);
@@ -190,22 +183,21 @@ function findActiveTmuxSession(
 /**
  * Fallback: capture from any tmux session inside the sandbox.
  */
-async function captureViaExecInSandbox(
-  sandbox: { id: string; backend: string; guestIp?: string }
+async function captureFromAvailableSession(
+  execCommand: SandboxCommandExecutor,
 ): Promise<string | null> {
   try {
-    const listOutput = await execInSandbox(
-      sandbox,
+    const listOutput = await execCommand(
       `tmux list-sessions -F '#{session_name}' 2>/dev/null | head -1`,
-      { timeout: 5000 }
+      5000,
     );
+    if (!listOutput) return null;
     const sessionName = listOutput.trim();
     if (!sessionName) return null;
 
-    return await execInSandbox(
-      sandbox,
+    return await execCommand(
       `tmux capture-pane -t ${sessionName} -p -S -${CAPTURE_LINES} 2>/dev/null`,
-      { timeout: 5000 }
+      5000,
     );
   } catch {
     return null;

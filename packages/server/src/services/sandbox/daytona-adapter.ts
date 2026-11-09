@@ -4,7 +4,7 @@
  * Converts Daytona cloud workspaces to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -17,10 +17,11 @@ import {
   type DaytonaSandboxState,
   DAYTONA_SIZE_PRESETS,
 } from '../daytona.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { downloadFileViaScp, listFilesViaSsh } from './files.js';
 import type { GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps Daytona sandbox state to unified SandboxStatus
@@ -244,6 +245,22 @@ export class DaytonaAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: 'dev',
+      home: '/home/daytona',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
@@ -296,5 +313,21 @@ export class DaytonaAdapter implements SandboxAdapter {
 
   async getAgents(_id: string): Promise<AgentInfo[]> {
     return [];
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Daytona workspace does not have SSH access configured');
+    const meta = sandbox.backendMeta as DaytonaMeta | undefined;
+    if (!meta?.sshKey) throw new Error('SSH key not available for this Daytona workspace');
+
+    return execViaSsh({
+      command,
+      host: sandbox.guestIp,
+      user: 'dev',
+      keyContent: meta.sshKey,
+      port: sandbox.sshPort || 22,
+      timeoutMs,
+    });
   }
 }

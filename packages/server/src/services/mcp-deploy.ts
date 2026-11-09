@@ -211,11 +211,9 @@ export async function deploy(
       backend,
       image,
       ports,
-      ...(backend === 'docker' ? {
-        dockerOptions: {
-          env: userEnv,
-        },
-      } : {}),
+      dockerOptions: {
+        env: userEnv,
+      },
     });
 
     deployment.sandboxId = sandbox.id;

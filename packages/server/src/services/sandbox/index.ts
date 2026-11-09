@@ -5,7 +5,7 @@
  * through a single API. Routes requests to the appropriate backend adapter.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxGitLog, SandboxLogOptions, TmuxSessionInfo } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxGitLog, SandboxLogOptions, TmuxSessionInfo } from './types.js';
 import type {
   Sandbox,
   SandboxBackend,
@@ -21,22 +21,26 @@ import { AzureAdapter } from './azure-adapter.js';
 import { GcpAdapter } from './gcp-adapter.js';
 import { DigitalOceanAdapter } from './digitalocean-adapter.js';
 import { LinodeAdapter } from './linode-adapter.js';
-import { DockerService, dockerService } from '../docker.js';
-import { FirecrackerService } from '../firecracker.js';
-import { DaytonaService } from '../daytona.js';
-import { AwsService } from '../aws.js';
-import { AzureService } from '../azure.js';
-import { GcpService } from '../gcp.js';
-import { DigitalOceanService } from '../digitalocean.js';
-import { LinodeService } from '../linode.js';
+import { DockerService, dockerService, initializeDockerService } from '../docker.js';
+import { FirecrackerService, initializeFirecrackerService } from '../firecracker.js';
+import { DaytonaService, initializeDaytonaService } from '../daytona.js';
+import { AwsService, initializeAwsService } from '../aws.js';
+import { AzureService, initializeAzureService } from '../azure.js';
+import { GcpService, initializeGcpService } from '../gcp.js';
+import { DigitalOceanService, initializeDigitalOceanService } from '../digitalocean.js';
+import { LinodeService, initializeLinodeService } from '../linode.js';
 import type { GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
-import { execInSandbox } from '../../lib/exec-in-sandbox.js';
+import type { ImageInfo } from '../../types/index.js';
 import { getTerminalSummary as generateTerminalSummary, type CachedSummary } from '../terminal-summary.js';
 
 export class SandboxService {
   private adapters: Map<SandboxBackend, SandboxAdapter> = new Map();
   private initialized = false;
+
+  isInitialized(): boolean {
+    return this.initialized;
+  }
 
   // Service instances (lazily initialized)
   private dockerService: DockerService | null = null;
@@ -241,6 +245,19 @@ export class SandboxService {
   }
 
   /**
+   * List images from backends that support image discovery.
+   */
+  async listImages(): Promise<ImageInfo[]> {
+    const imageLists = await Promise.all(
+      Array.from(this.adapters.values())
+        .filter((adapter) => adapter.listImages)
+        .map((adapter) => adapter.listImages!()),
+    );
+
+    return imageLists.flat();
+  }
+
+  /**
    * Get a specific sandbox by ID
    */
   async get(id: string): Promise<Sandbox | null> {
@@ -350,6 +367,21 @@ export class SandboxService {
   }
 
   /**
+   * Upload multiple in-memory files to a running sandbox.
+   */
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter) throw new Error('Sandbox not found');
+
+    const sandbox = await adapter.get(id);
+    if (!sandbox) throw new Error('Sandbox not found');
+    if (sandbox.status !== 'running') throw new Error('Sandbox must be running to upload files');
+    if (files.length === 0) return 0;
+
+    return adapter.uploadFiles(id, files);
+  }
+
+  /**
    * Upload a local directory archive to a sandbox. Returns null when the sandbox does not exist.
    */
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string | null> {
@@ -400,6 +432,23 @@ export class SandboxService {
   }
 
   /**
+   * Execute a command inside a running sandbox. Returns null on failure.
+   */
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string | null> {
+    const adapter = this.getAdapter(this.getBackendFromId(id));
+    if (!adapter) return null;
+
+    const sandbox = await adapter.get(id);
+    if (!sandbox || sandbox.status !== 'running') return null;
+
+    try {
+      return await adapter.exec(id, command, timeoutMs);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get tmux sessions running in a sandbox.
    */
   async getTmuxSessions(id: string): Promise<TmuxSessionInfo[]> {
@@ -407,11 +456,12 @@ export class SandboxService {
     if (!sandbox || sandbox.status !== 'running') return [];
 
     try {
-      const output = await execInSandbox(
-        sandbox,
+      const output = await this.exec(
+        id,
         `tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_created}' 2>/dev/null || true`,
-        { timeout: 5000 },
+        5000,
       );
+      if (!output) return [];
 
       return output
         .trim()
@@ -442,7 +492,11 @@ export class SandboxService {
       ? session
       : undefined;
 
-    return generateTerminalSummary(sandbox, tmuxSession);
+    return generateTerminalSummary(
+      sandbox,
+      tmuxSession,
+      (command, timeoutMs) => this.exec(id, command, timeoutMs),
+    );
   }
 
   /**
@@ -453,10 +507,10 @@ export class SandboxService {
     if (!sandbox || sandbox.status !== 'running') return null;
 
     try {
-      const content = await execInSandbox(
-        sandbox,
+      const content = await this.exec(
+        id,
         `tmux capture-pane -e -p -S -50 2>/dev/null || true`,
-        { timeout: 5000 },
+        5000,
       );
       return content || null;
     } catch {
@@ -471,18 +525,18 @@ export class SandboxService {
     const sandbox = await this.get(id);
     if (!sandbox || sandbox.status !== 'running') return { commits: [], branch: '' };
 
-    const repoRoot = (await execInSandbox(
-      sandbox,
+    const repoRoot = (await this.exec(
+      id,
       `cd ${JSON.stringify(workdir)} && git rev-parse --show-toplevel 2>/dev/null || echo ""`,
-    )).trim();
+    ))?.trim() || '';
     const gitDir = repoRoot || workdir;
 
     const [logOutput, branch] = await Promise.all([
-      execInSandbox(sandbox, `cd ${JSON.stringify(gitDir)} && git log --pretty=format:'%H|%h|%s|%an|%ae|%aI' -n ${limit} 2>/dev/null || echo ""`),
-      execInSandbox(sandbox, `cd ${JSON.stringify(gitDir)} && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""`),
+      this.exec(id, `cd ${JSON.stringify(gitDir)} && git log --pretty=format:'%H|%h|%s|%an|%ae|%aI' -n ${limit} 2>/dev/null || echo ""`),
+      this.exec(id, `cd ${JSON.stringify(gitDir)} && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""`),
     ]);
 
-    const commits = logOutput
+    const commits = (logOutput || '')
       .split('\n')
       .filter(Boolean)
       .map((line) => {
@@ -490,7 +544,7 @@ export class SandboxService {
         return { hash, shortHash, subject, author, email, date };
       });
 
-    return { commits, branch: branch.trim() || '' };
+    return { commits, branch: branch?.trim() || '' };
   }
 
   /**
@@ -500,16 +554,16 @@ export class SandboxService {
     const sandbox = await this.get(id);
     if (!sandbox || sandbox.status !== 'running') return '';
 
-    const repoRoot = (await execInSandbox(
-      sandbox,
+    const repoRoot = (await this.exec(
+      id,
       `cd ${JSON.stringify(workdir)} && git rev-parse --show-toplevel 2>/dev/null || echo ""`,
-    )).trim();
+    ))?.trim() || '';
     const gitDir = repoRoot || workdir;
 
-    return execInSandbox(
-      sandbox,
+    return (await this.exec(
+      id,
       `cd ${JSON.stringify(gitDir)} && git show ${hash} --stat 2>/dev/null || echo ""`,
-    );
+    )) || '';
   }
 
   /**
@@ -607,6 +661,7 @@ export class SandboxService {
 
 // Singleton instance
 let sandboxServiceInstance: SandboxService | null = null;
+let sandboxServiceInitialization: Promise<SandboxService> | null = null;
 
 /**
  * Get or create the sandbox service singleton
@@ -637,10 +692,52 @@ export async function initializeSandboxService(options?: {
 }
 
 /**
+ * Return the initialized sandbox service, initializing all available backends once.
+ */
+export async function ensureSandboxService(): Promise<SandboxService> {
+  const service = getSandboxService();
+  if (service.isInitialized()) return service;
+  if (sandboxServiceInitialization) return sandboxServiceInitialization;
+
+  sandboxServiceInitialization = (async () => {
+    const backends = [
+      { id: 'aws', init: initializeAwsService },
+      { id: 'azure', init: initializeAzureService },
+      { id: 'daytona', init: initializeDaytonaService },
+      { id: 'docker', init: initializeDockerService },
+      { id: 'digitalocean', init: initializeDigitalOceanService },
+      { id: 'gcp', init: initializeGcpService },
+      { id: 'firecracker', init: initializeFirecrackerService },
+      { id: 'linode', init: initializeLinodeService },
+    ] as const;
+
+    const available = (await Promise.all(backends.map(async ({ id, init }) => {
+      try {
+        return { id, service: await init() };
+      } catch (error) {
+        console.log(`[SandboxService] ${id} not available:`, error instanceof Error ? error.message : 'unknown');
+        return null;
+      }
+    }))).filter((result) => result !== null);
+
+    const options = Object.fromEntries(
+      available.map(({ id, service: backendService }) => [id, backendService]),
+    );
+    return initializeSandboxService(options);
+  })().catch((error) => {
+    sandboxServiceInitialization = null;
+    throw error;
+  });
+
+  return sandboxServiceInitialization;
+}
+
+/**
  * Reset the sandbox service so it will be reinitialized on next use.
  * Call this after cloud backend configuration changes.
  */
 export function resetSandboxService(): void {
+  sandboxServiceInitialization = null;
   if (sandboxServiceInstance) {
     sandboxServiceInstance.reset();
   }

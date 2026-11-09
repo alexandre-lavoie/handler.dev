@@ -4,7 +4,7 @@
  * Converts AWS EC2 instances to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,10 +19,11 @@ import {
   AWS_SSH_KEY_PATH,
   type AwsSizeClass,
 } from '../aws.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { downloadFileViaScp, listFilesViaSsh } from './files.js';
 import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps EC2 instance state to unified SandboxStatus
@@ -228,6 +229,21 @@ export class AwsAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: 'ubuntu',
+      home: '/home/ubuntu',
+      keyContent: key,
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
@@ -272,5 +288,14 @@ export class AwsAdapter implements SandboxAdapter {
 
   async getAgents(_id: string): Promise<AgentInfo[]> {
     return [];
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('AWS instance does not have a public IP address');
+    const key = await this.aws.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available for AWS instances');
+
+    return execViaSsh({ command, host: sandbox.guestIp, user: 'ubuntu', keyContent: key, timeoutMs });
   }
 }

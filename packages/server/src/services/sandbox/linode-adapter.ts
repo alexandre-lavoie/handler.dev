@@ -4,7 +4,7 @@
  * Converts Linode instances to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,10 +19,11 @@ import {
   LINODE_SSH_KEY_PATH,
   type LinodeSizeClass,
 } from '../linode.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { downloadFileViaScp, listFilesViaSsh } from './files.js';
 import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps Linode instance status to unified SandboxStatus
@@ -226,6 +227,21 @@ export class LinodeAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'root',
+      home: '/root',
+      keyContent: key,
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
@@ -270,5 +286,20 @@ export class LinodeAdapter implements SandboxAdapter {
 
   async getAgents(_id: string): Promise<AgentInfo[]> {
     return [];
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.linode.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return execViaSsh({
+      command,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'root',
+      keyContent: key,
+      timeoutMs,
+    });
   }
 }

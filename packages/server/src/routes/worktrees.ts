@@ -1,30 +1,21 @@
 import { Hono } from 'hono';
 import * as worktreeService from '../services/worktree.js';
 import type { CommandRunner } from '../services/worktree.js';
-import { getSandboxService, initializeSandboxService } from '../services/sandbox/index.js';
+import { ensureSandboxService as ensureSandboxServiceInitialized, type SandboxService } from '../services/sandbox/index.js';
 import { getFirecrackerService } from '../services/firecracker.js';
-import { execInSandbox } from '../lib/exec-in-sandbox.js';
 
 const worktrees = new Hono();
-
-// Lazy initialization state (mirrors sandboxes.ts pattern)
-let sandboxServiceInitialized = false;
-
-async function ensureSandboxServiceInitialized() {
-  if (sandboxServiceInitialized) {
-    return getSandboxService();
-  }
-  await initializeSandboxService();
-  sandboxServiceInitialized = true;
-  return getSandboxService();
-}
 
 /**
  * Build a CommandRunner for the given sandbox that dispatches to
  * Docker exec or SSH depending on the backend.
  */
-function buildRunner(sandbox: { id: string; backend: string; guestIp?: string }): CommandRunner {
-  return (cmd: string) => execInSandbox(sandbox, cmd);
+function buildRunner(service: SandboxService, sandboxId: string): CommandRunner {
+  return async (cmd: string) => {
+    const output = await service.exec(sandboxId, cmd);
+    if (output === null) throw new Error(`Failed to execute command in sandbox ${sandboxId}`);
+    return output;
+  };
 }
 
 // Fork a worktree from a sandbox
@@ -47,7 +38,7 @@ worktrees.post('/fork', async (c) => {
       return c.json({ error: 'Sandbox is not running' }, 400);
     }
 
-    const run = buildRunner(sandbox);
+    const run = buildRunner(service, sandbox.id);
 
     const result = await worktreeService.forkWorktree({
       sandboxId,
@@ -169,7 +160,7 @@ worktrees.get('/:sandboxId', async (c) => {
       return c.json([]);
     }
 
-    const run = buildRunner(sandbox);
+    const run = buildRunner(service, sandbox.id);
     const list = await worktreeService.listWorktrees(sandboxId, run);
     return c.json(list);
   } catch (err) {
@@ -197,7 +188,7 @@ worktrees.post('/merge', async (c) => {
       return c.json({ error: 'Sandbox not found or not running' }, 400);
     }
 
-    const run = buildRunner(sandbox);
+    const run = buildRunner(service, sandbox.id);
     const result = await worktreeService.mergeWorktree({
       sandboxId,
       worktreeId,
@@ -228,7 +219,7 @@ worktrees.delete('/:id', async (c) => {
       const service = await ensureSandboxServiceInitialized();
       const sandbox = await service.get(record.sandboxId);
       if (sandbox && sandbox.status === 'running') {
-        run = buildRunner(sandbox);
+        run = buildRunner(service, sandbox.id);
       }
     }
 
@@ -259,7 +250,7 @@ worktrees.get('/:id/status', async (c) => {
       return c.json({ error: 'Sandbox not found or not running' }, 400);
     }
 
-    const run = buildRunner(sandbox);
+    const run = buildRunner(service, sandbox.id);
     const status = await worktreeService.getWorktreeStatus(id, run);
     return c.json(status);
   } catch (err) {

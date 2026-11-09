@@ -10,72 +10,20 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { getSandboxService, initializeSandboxService, resetSandboxService } from '../services/sandbox/index.js';
-import { getFirecrackerService, initializeFirecrackerService } from '../services/firecracker.js';
-import { initializeDaytonaService } from '../services/daytona.js';
-import { getAwsService, initializeAwsService } from '../services/aws.js';
-import { getAzureService, initializeAzureService } from '../services/azure.js';
-import { getGcpService, initializeGcpService } from '../services/gcp.js';
-import { getDigitalOceanService, initializeDigitalOceanService } from '../services/digitalocean.js';
-import { getLinodeService, initializeLinodeService } from '../services/linode.js';
-import { dockerService, initializeDockerService } from '../services/docker.js';
+import { ensureSandboxService as ensureSandboxServiceInitialized, resetSandboxService } from '../services/sandbox/index.js';
+import { dockerService } from '../services/docker.js';
 import type { SandboxBackend, SandboxStatus } from '../types/sandbox.js';
 import { execFileSync } from 'child_process';
 import { validateSandboxId, validatePath, validateFilename } from '../lib/validation.js';
 
 const sandboxes = new Hono();
 
-// Lazy initialization state
-let sandboxServiceInitialized = false;
-
 /**
  * Reset the sandbox service so it will be reinitialized on next use.
  * Call this after cloud backend configuration changes.
  */
 export function reinitializeSandboxService() {
-  sandboxServiceInitialized = false;
   resetSandboxService();
-}
-
-/**
- * Ensure sandbox service is initialized with all available backends
- */
-async function ensureSandboxServiceInitialized() {
-  if (sandboxServiceInitialized) {
-    return getSandboxService();
-  }
-
-  const backends = [
-    {id: 'aws', init: initializeAwsService},
-    {id: 'azure', init: initializeAzureService},
-    {id: 'daytona', init: initializeDaytonaService},
-    {id: 'docker', init: initializeDockerService},
-    {id: 'digitalocean', init: initializeDigitalOceanService},
-    {id: 'gcp', init: initializeGcpService},
-    {id: 'firecracker', init: initializeFirecrackerService},
-    {id: 'linode', init: initializeLinodeService},
-  ] as const satisfies Array<{id: string, init: () => Promise<any>}>;
-
-  const services = (await Promise.all(backends.map(async ({ id, init }) => {
-    try {
-      const service = await init();
-      if (!service.isAvailable()) return null;
-
-      return { id, service };
-    } catch (err) {
-      console.log(`[SandboxRoutes] ${id} not available:`, err instanceof Error ? err.message : 'unknown');
-    }
-
-    return null;
-  }))).filter((v) => v !== null);
-
-  const options = Object.fromEntries(services.map(({ id, service }) => [id, service]));
-
-  // Initialize sandbox service with available backends
-  await initializeSandboxService(options);
-
-  sandboxServiceInitialized = true;
-  return getSandboxService();
 }
 
 const ListSandboxesQuerySchema = z.object({

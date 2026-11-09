@@ -4,9 +4,9 @@
  * Converts Docker containers to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, posix } from 'path';
 import { tmpdir } from 'os';
 import type {
@@ -15,7 +15,7 @@ import type {
   DockerMeta,
   CreateSandboxRequest,
 } from '../../types/sandbox.js';
-import type { ContainerInfo } from '../../types/index.js';
+import type { ContainerInfo, ImageInfo } from '../../types/index.js';
 import { DockerService, dockerService } from '../docker.js';
 import { listBuilds, getBuild, type BuildStatus } from '../build-tracker.js';
 import { getPrivateKey } from '../container-builder.js';
@@ -23,6 +23,7 @@ import { findAvailableSshPort } from '../../utils/port.js';
 import { parseLsOutput } from './files.js';
 import { getDockerMetrics, type GuestMetrics } from '../guest-metrics.js';
 import { detectAgentsInDocker, type AgentInfo } from '../agent-detect.js';
+import { expandSandboxPath } from './upload.js';
 
 /**
  * Maps Docker container state to unified SandboxStatus
@@ -330,6 +331,30 @@ export class DockerAdapter implements SandboxAdapter {
     return remotePath;
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-upload-files-'));
+    try {
+      for (const [index, file] of files.entries()) {
+        const destination = expandSandboxPath(file.destPath, '/home/dev');
+        const remotePath = posix.join(destination, file.filename);
+        const sourcePath = join(tempDir, `${index}-${file.filename}`);
+        writeFileSync(sourcePath, file.content);
+
+        execFileSync('docker', ['exec', containerId, 'mkdir', '-p', destination], { stdio: 'pipe' });
+        execFileSync('docker', ['cp', sourcePath, `${containerId}:${remotePath}`], { stdio: 'pipe' });
+        try {
+          execFileSync('docker', ['exec', containerId, 'chown', 'dev:dev', remotePath], { stdio: 'pipe' });
+        } catch {
+          // Ownership changes are best-effort.
+        }
+      }
+      return files.length;
+    } finally {
+      rmSync(tempDir, { recursive: true });
+    }
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
     const destinationPath = directory.destinationPath || '/home/dev/workspace';
@@ -399,5 +424,17 @@ export class DockerAdapter implements SandboxAdapter {
   async getAgents(id: string): Promise<AgentInfo[]> {
     const containerId = id.startsWith('docker-') ? id.slice(7) : id;
     return detectAgentsInDocker(containerId, id);
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const containerId = id.startsWith('docker-') ? id.slice(7) : id;
+    return execFileSync('docker', ['exec', containerId, 'sh', '-c', command], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+    });
+  }
+
+  async listImages(): Promise<ImageInfo[]> {
+    return this.service.listImages();
   }
 }

@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { SSH_OPTS } from '../../lib/exec-in-sandbox.js';
+import { SSH_OPTS } from './exec.js';
 import type { SandboxFileInfo } from './types.js';
 
 export function parseLsOutput(output: string): SandboxFileInfo[] {

@@ -4,7 +4,7 @@
  * Converts Firecracker VMs to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxBackend,
@@ -14,9 +14,10 @@ import type {
 } from '../../types/sandbox.js';
 import type { VmInfo, VmStatus, HypervisorType } from '../../types/vm.js';
 import { FirecrackerService } from '../firecracker.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { getVmMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
 import { detectAgentsViaSsh, type AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps VM status to unified SandboxStatus
@@ -229,6 +230,19 @@ export class FirecrackerAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('VM does not have an IP address');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: 'agent',
+      home: '/home/agent',
+      keyPath: this.firecracker.getSshKeyPath(),
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('VM does not have an IP address');
@@ -266,5 +280,18 @@ export class FirecrackerAdapter implements SandboxAdapter {
     if (!keyPath) return [];
 
     return detectAgentsViaSsh(sandbox.guestIp, 22, 'agent', keyPath, id);
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('VM does not have an IP address');
+
+    return execViaSsh({
+      command,
+      host: sandbox.guestIp,
+      user: 'agent',
+      keyPath: this.firecracker.getSshKeyPath(),
+      timeoutMs,
+    });
   }
 }

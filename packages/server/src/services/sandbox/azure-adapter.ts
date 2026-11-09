@@ -4,7 +4,7 @@
  * Converts Azure VMs to the unified Sandbox abstraction.
  */
 
-import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
+import type { SandboxAdapter, SandboxDirectoryUpload, SandboxFileContent, SandboxFileInfo, SandboxFileUpload, SandboxLogOptions } from './types.js';
 import type {
   Sandbox,
   SandboxStatus,
@@ -19,10 +19,11 @@ import {
   AZURE_SSH_KEY_PATH,
   type AzureSizeClass,
 } from '../azure.js';
-import { uploadDirectoryViaScp, uploadFileViaScp } from './upload.js';
+import { uploadDirectoryViaScp, uploadFilesViaTar, uploadFileViaScp } from './upload.js';
 import { downloadFileViaScp, listFilesViaSsh } from './files.js';
 import { getCloudMetricsViaSsh, type GuestMetrics } from '../guest-metrics.js';
 import type { AgentInfo } from '../agent-detect.js';
+import { execViaSsh } from './exec.js';
 
 /**
  * Maps Azure power state to unified SandboxStatus
@@ -212,6 +213,21 @@ export class AzureAdapter implements SandboxAdapter {
     });
   }
 
+  async uploadFiles(id: string, files: SandboxFileContent[]): Promise<number> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return uploadFilesViaTar({
+      files,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'azureuser',
+      home: '/home/azureuser',
+      keyContent: key,
+    });
+  }
+
   async uploadDirectory(id: string, directory: SandboxDirectoryUpload): Promise<string> {
     const sandbox = await this.get(id);
     if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
@@ -256,5 +272,20 @@ export class AzureAdapter implements SandboxAdapter {
 
   async getAgents(_id: string): Promise<AgentInfo[]> {
     return [];
+  }
+
+  async exec(id: string, command: string, timeoutMs = 10_000): Promise<string> {
+    const sandbox = await this.get(id);
+    if (!sandbox?.guestIp) throw new Error('Instance does not have a public IP address');
+    const key = await this.azure.getSshPrivateKey();
+    if (!key) throw new Error('SSH key not available');
+
+    return execViaSsh({
+      command,
+      host: sandbox.guestIp,
+      user: sandbox.sshUser || 'azureuser',
+      keyContent: key,
+      timeoutMs,
+    });
   }
 }

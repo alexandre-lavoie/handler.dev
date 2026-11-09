@@ -1,8 +1,62 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { SSH_OPTS } from '../../lib/exec-in-sandbox.js';
+import { SSH_OPTS } from './exec.js';
+import type { SandboxFileContent } from './types.js';
+
+export function expandSandboxPath(filePath: string, home: string): string {
+  return filePath.startsWith('~') ? filePath.replace(/^~(?=\/|$)/, home) : filePath;
+}
+
+export function uploadFilesViaTar(options: {
+  files: SandboxFileContent[];
+  host: string;
+  user: string;
+  home: string;
+  keyPath?: string;
+  keyContent?: string;
+  port?: number;
+}): number {
+  if (options.files.length === 0) return 0;
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-upload-files-'));
+  try {
+    let keyPath = options.keyPath;
+    if (options.keyContent) {
+      keyPath = join(tempDir, 'ssh_key');
+      writeFileSync(keyPath, options.keyContent, { mode: 0o600 });
+    }
+    if (!keyPath) throw new Error('SSH key not available');
+
+    const payloadDir = join(tempDir, 'payload');
+    const relativePaths: string[] = [];
+    for (const file of options.files) {
+      const destination = expandSandboxPath(file.destPath, options.home);
+      const directory = join(payloadDir, destination);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, file.filename), file.content);
+      relativePaths.push(join(destination, file.filename).replace(/^\//, ''));
+    }
+
+    const tarData = execFileSync('tar', ['cf', '-', '-C', payloadDir, ...relativePaths], {
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    const portArgs = options.port && options.port !== 22 ? ['-p', String(options.port)] : [];
+    execFileSync(
+      'ssh',
+      [
+        '-T', '-i', keyPath, ...portArgs, ...SSH_OPTS,
+        `${options.user}@${options.host}`,
+        'trap "" TERM; kill 0 2>/dev/null; tar xf - -C / --no-same-owner',
+      ],
+      { input: tarData, timeout: 30_000 },
+    );
+    return options.files.length;
+  } finally {
+    rmSync(tempDir, { recursive: true });
+  }
+}
 
 export function uploadFileViaScp(options: {
   sourcePath: string;

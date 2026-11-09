@@ -3,7 +3,8 @@ import { streamSSE } from 'hono/streaming';
 import * as mcpRegistry from '../services/mcp-registry.js';
 import { streamMCPInstallInstructions, isAIConfigured, searchMCPServersWithAI } from '../services/ai.js';
 import * as mcpDeploy from '../services/mcp-deploy.js';
-import { injectFilesIntoSandbox, readFileFromSandbox, ensureSandboxService, execInSandbox } from '../services/sandbox-inject.js';
+import { injectFilesIntoSandbox, readFileFromSandbox } from '../services/sandbox-inject.js';
+import { ensureSandboxService } from '../services/sandbox/index.js';
 
 const mcp = new Hono();
 
@@ -574,7 +575,8 @@ mcp.post('/deployments/:id/ping/:sandboxId', async (c) => {
     // For SSE endpoints, just check if the server responds (HEAD or short GET with timeout)
     // Use curl with connect-timeout to avoid hanging
     const curlCmd = `curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "${url}"`;
-    const result = await execInSandbox(sandboxId, curlCmd, 15000);
+    const service = await ensureSandboxService();
+    const result = await service.exec(sandboxId, curlCmd, 15000);
 
     if (result) {
       const statusCode = parseInt(result.trim(), 10);
@@ -602,7 +604,8 @@ mcp.post('/deployments/:id/ping/:sandboxId', async (c) => {
   const command = configuredEntry.command as string | undefined;
   if (command) {
     const whichCmd = `which ${command} 2>/dev/null && echo EXISTS || echo MISSING`;
-    const result = await execInSandbox(sandboxId, whichCmd, 5000);
+    const service = await ensureSandboxService();
+    const result = await service.exec(sandboxId, whichCmd, 5000);
     const exists = result?.includes('EXISTS') || false;
 
     return c.json({
